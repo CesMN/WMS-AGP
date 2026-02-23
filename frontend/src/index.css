@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  font-size: var(--font-size-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root {
+  --color-primary: #2563eb;
+  /* Tamaños de fuente (se sobrescriben desde Configuración) */
+  --font-size-base: 14px;
+  --font-size-titles: 20px;
+  --font-size-text: 14px;
+  --font-size-table: 13px;
+  --font-size-modal: 14px;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Transición suave en overlay del modal */
+.wms-modal-backdrop {
+  animation: wms-fade-in 0.15s ease-out;
+}
+@keyframes wms-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Card hover consistente (opcional: añadir clase .wms-card en contenedores) */
+.wms-card {
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.wms-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.dark .wms-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+/* Accesibilidad: focus visible para teclado */
+.wms-app-content button:focus-visible,
+.wms-app-content a:focus-visible,
+.wms-app-content input:focus-visible,
+.wms-app-content select:focus-visible,
+.wms-app-content [tabindex]:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.wms-modal button:focus-visible,
+.wms-modal input:focus-visible,
+.wms-modal select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Contenido principal: texto general */
+.wms-app-content {
+  font-size: var(--font-size-text);
+}
+
+/* Títulos (h1, h2, h3 y clases de Tailwind para títulos) */
+.wms-app-content .text-3xl,
+.wms-app-content .text-2xl,
+.wms-app-content .text-xl,
+.wms-app-content h1,
+.wms-app-content h2,
+.wms-app-content h3 {
+  font-size: var(--font-size-titles) !important;
+}
+
+/* Texto pequeño (labels, hints) mantiene proporción */
+.wms-app-content .text-sm {
+  font-size: calc(var(--font-size-text) * 0.875) !important;
+}
+.wms-app-content .text-xs {
+  font-size: calc(var(--font-size-text) * 0.75) !important;
+}
+
+/* Tablas */
+.wms-app-content table,
+.wms-app-content .overflow-x-auto table {
+  font-size: var(--font-size-table) !important;
+}
+
+/* Ventanas modales */
+.wms-modal {
+  font-size: var(--font-size-modal) !important;
+}
+.wms-modal .text-xl,
+.wms-modal h2 {
+  font-size: calc(var(--font-size-modal) * 1.15) !important;
+}
+.wms-modal table {
+  font-size: calc(var(--font-size-modal) * 0.93) !important;
+}
+
+/* Color primario aplicado a iconos y acentos en vistas */
+.wms-app-content .text-primary-600,
+.wms-app-content .text-primary-400,
+.wms-app-content .text-primary-700,
+.wms-app-content .text-primary-300,
+.wms-app-content .text-primary-800,
+.wms-app-content .text-primary-200,
+.wms-app-content .text-primary-900 {
+  color: var(--color-primary) !important;
+}
+.wms-app-content .bg-primary-600,
+.wms-app-content .bg-primary-700 {
+  background-color: var(--color-primary) !important;
+}
+.wms-app-content .border-primary-500,
+.wms-app-content .hover\:border-primary-500:hover {
+  border-color: var(--color-primary) !important;
+}
+.wms-app-content svg.text-primary-600,
+.wms-app-content svg.text-primary-400 {
+  color: var(--color-primary) !important;
+}
