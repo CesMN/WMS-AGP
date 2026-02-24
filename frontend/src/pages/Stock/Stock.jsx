@@ -38,6 +38,7 @@ const Stock = () => {
   const [expandidoId, setExpandidoId] = useState(null)
   const [detalleItem, setDetalleItem] = useState(null)
   const [verLotes, setVerLotes] = useState(false)
+  const [expandidosLotes, setExpandidosLotes] = useState(new Set())
 
   useEffect(() => {
     if (clienteFromUrl) setFiltroCliente(clienteFromUrl)
@@ -423,7 +424,7 @@ const Stock = () => {
 
       <Modal
         isOpen={!!detalleItem}
-        onClose={() => { setDetalleItem(null); setVerLotes(false) }}
+        onClose={() => { setDetalleItem(null); setVerLotes(false); setExpandidosLotes(new Set()) }}
         title={verLotes ? `Lotes — ${detalleItem?.codigo ?? ''}` : 'Detalle del producto'}
         size="lg"
       >
@@ -526,31 +527,51 @@ const Stock = () => {
                   return lotesOrdenados.map((key) => {
                     const g = byLote[key]
                     const totalKgReal = g.totalKg + g.totalPesoAdj
+                    const expandido = expandidosLotes.has(key)
+                    const toggleLote = () => {
+                      setExpandidosLotes((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        return next
+                      })
+                    }
                     return (
-                      <div key={key} className="rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/50 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <div key={key} className="rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/50 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={toggleLote}
+                          className="w-full flex flex-wrap items-center justify-between gap-2 p-4 text-left hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+                        >
                           <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                            {expandido ? (
+                              <ChevronDown className="w-4 h-4 text-primary-600 flex-shrink-0" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4 text-primary-600 flex-shrink-0" />
+                            )}
                             <Layers className="w-4 h-4 text-primary-600" />
                             Lote: {g.lote}
                           </h3>
                           <span className="text-sm text-gray-600 dark:text-gray-400">
-                            {g.totalBultos} bultos · {totalKgReal.toFixed(2)} kg total
+                            {g.totalBultos} bultos · {totalKgReal.toFixed(2)} kg total · {g.ubicaciones.length} ubicación{g.ubicaciones.length !== 1 ? 'es' : ''}
                           </span>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {g.ubicaciones.map((u, idx) => (
-                            <button
-                              key={idx}
-                              type="button"
-                              onClick={() => { setDetalleItem(null); setVerLotes(false); irAUbicacion(u.almacen_id, u.carril_id, u.posicion_id) }}
-                              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-primary-50 dark:hover:bg-primary-900/20 text-left text-sm"
-                            >
-                              <MapPin className="w-4 h-4 text-primary-600 flex-shrink-0" />
-                              <span>{u.almacen_nombre} → {u.carril_nombre} → N{u.numero_nivel} → P{u.numero_posicion}</span>
-                              <span className="text-gray-500 dark:text-gray-400">({u.cantidad_bultos} bultos{u.peso_adicional ? `, ${Number(u.peso_adicional).toFixed(2)} kg adj.` : ''})</span>
-                            </button>
-                          ))}
-                        </div>
+                        </button>
+                        {expandido && (
+                          <div className="flex flex-wrap gap-2 px-4 pb-4 pt-0 border-t border-gray-200 dark:border-gray-600">
+                            {g.ubicaciones.map((u, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => { setDetalleItem(null); setVerLotes(false); setExpandidosLotes(new Set()); irAUbicacion(u.almacen_id, u.carril_id, u.posicion_id) }}
+                                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-primary-50 dark:hover:bg-primary-900/20 text-left text-sm"
+                              >
+                                <MapPin className="w-4 h-4 text-primary-600 flex-shrink-0" />
+                                <span>{u.almacen_nombre} → {u.carril_nombre} → N{u.numero_nivel} → P{u.numero_posicion}</span>
+                                <span className="text-gray-500 dark:text-gray-400">({u.cantidad_bultos} bultos{u.peso_adicional ? `, ${Number(u.peso_adicional).toFixed(2)} kg adj.` : ''})</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )
                   })
