@@ -63,14 +63,17 @@ Si ya usas Git, solo asegúrate de tener un `git remote` apuntando a ese repo y 
      - **Region:** la misma que la base de datos.
      - **Branch:** `main`.
      - **Runtime:** Node.
-     - **Build Command:**
+     - **Build Command** (usa **--include=dev** en frontend para que se instale Vite; en Render con NODE_ENV=production si no, falla "vite: not found"):
        ```bash
-       cd frontend && npm install && npm run build && cd ../backend && npm install
+       cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install
        ```
      - **Start Command:**
        ```bash
        cd backend && node server.js
        ```
+     - Si prefieres usar el script de la raíz (ya hay un `package.json` en la raíz):  
+       Build: `npm run build`  
+       Start: `npm start`
      - **Plan:** Free.
 
 4. **Variables de entorno** (en el Web Service, pestaña **Environment**):
@@ -158,10 +161,44 @@ Cualquier persona con el enlace puede hacer pruebas (si quieres restringir acces
 
 ---
 
+## Cómo agregar estos cambios al entorno en internet
+
+Cuando modifiques el código (por ejemplo: permitir 0 bultos + saldo en el formulario de ingreso) y quieras que se refleje en la app desplegada en Render:
+
+1. **Sube los cambios a GitHub** desde tu PC:
+   ```bash
+   git add .
+   git commit -m "Descripción del cambio (ej: permitir 0 bultos con peso adicional)"
+   git push origin main
+   ```
+
+2. **Render** suele tener activado el **auto-deploy**: al hacer push a `main`, vuelve a construir y desplegar la app. Espera unos minutos y recarga la URL de tu Web Service.
+
+3. Si el auto-deploy está desactivado: en el Dashboard de Render → tu **Web Service** → **Manual Deploy** → **Deploy latest commit**.
+
+No hace falta tocar la base de datos ni las variables de entorno para cambios solo de código (frontend/backend). Solo vuelve a ejecutar migraciones si añadiste nuevas.
+
+---
+
 ## Notas
 
 - **Plan gratuito de Render:** el servicio se “duerme” tras unos minutos sin uso; la primera petición puede tardar ~30–50 segundos en responder.
 - **Base de datos:** el PostgreSQL gratuito tiene límites de uso; para pruebas suele ser suficiente.
 - Si cambias código y vuelves a hacer **push** a `main`, Render puede estar configurado para redesplegar solo; si no, en el Dashboard del Web Service usa **Manual Deploy** → **Deploy latest commit**.
+
+### Si sale "Could not read package.json" o "ENOENT package.json"
+
+- **Causa:** El Build Command tiene `npm install` al principio; en la raíz no había `package.json`.
+- **Solución 1:** Usa este Build Command **sin** nada delante: `cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install`
+- **Solución 2:** Con el `package.json` en la raíz que ya tiene el proyecto: Build = `npm run build`, Start = `npm start`.
+
+### Si sale "vite: not found" o "Build failed" al hacer `vite build`
+
+- **Causa:** En Render, con `NODE_ENV=production`, `npm install` no instala **devDependencies**, y Vite está en devDependencies del frontend.
+- **Solución:** En el Build Command, en la parte del frontend usa `npm install --include=dev` (no solo `npm install`):
+  ```bash
+  cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install
+  ```
+  O si usas el script de la raíz, el `package.json` de la raíz ya lleva `--include=dev`; sube ese cambio a GitHub y vuelve a desplegar.
 
 Si prefieres no usar GitHub, Render también permite deploy desde **zip**: en **New** → **Web Service** puedes elegir “Deploy from ZIP” y subir el proyecto empaquetado (sin `node_modules`), y configurar Build/Start y variables igual que arriba.

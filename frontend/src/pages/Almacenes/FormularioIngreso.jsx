@@ -154,7 +154,7 @@ const FormularioIngreso = ({ isOpen, onClose, almacenId, carrilId, posicionId, o
   }
 
   const calcularTotalKg = () => {
-    if (!productoSeleccionado || !formData.cantidad_bultos) return 0
+    if (!productoSeleccionado) return 0
 
     const formato = Number(productoSeleccionado.formato) || 0
     const pesoAdicional = Number(formData.peso_adicional) || 0
@@ -197,8 +197,12 @@ const FormularioIngreso = ({ isOpen, onClose, almacenId, carrilId, posicionId, o
       newErrors.lote = 'El lote es obligatorio'
     }
 
-    if (!formData.cantidad_bultos || formData.cantidad_bultos < 1) {
-      newErrors.cantidad_bultos = 'La cantidad de bultos debe ser mayor a 0'
+    const bultos = Number(formData.cantidad_bultos)
+    const pesoAdj = Number(formData.peso_adicional) || 0
+    if (formData.cantidad_bultos == null || formData.cantidad_bultos === '' || bultos < 0) {
+      newErrors.cantidad_bultos = 'La cantidad de bultos es requerida y no puede ser negativa'
+    } else if (bultos === 0 && pesoAdj <= 0) {
+      newErrors.cantidad_bultos = 'Debe ingresar al menos 1 bulto o un peso adicional (saldo) mayor a 0'
     }
 
     if (formData.peso_adicional < 0) {
@@ -553,15 +557,24 @@ const FormularioIngreso = ({ isOpen, onClose, almacenId, carrilId, posicionId, o
           <input
             type="number"
             value={formData.cantidad_bultos}
-            onChange={(e) =>
-              setFormData((prev) => ({ ...prev, cantidad_bultos: parseInt(e.target.value) || 0 }))
-            }
-            min="1"
+            onChange={(e) => {
+              const raw = e.target.value
+              if (raw === '') {
+                setFormData((prev) => ({ ...prev, cantidad_bultos: 0 }))
+                return
+              }
+              const n = parseInt(raw, 10)
+              setFormData((prev) => ({ ...prev, cantidad_bultos: Number.isInteger(n) && n >= 0 ? n : prev.cantidad_bultos }))
+            }}
+            min="0"
             className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white ${
               errors.cantidad_bultos ? 'border-red-500' : 'border-gray-300'
             }`}
             disabled={loading}
           />
+          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+            Puede ser 0 si solo ingresa peso adicional (saldo).
+          </p>
           {errors.cantidad_bultos && (
             <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.cantidad_bultos}</p>
           )}

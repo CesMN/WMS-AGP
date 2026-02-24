@@ -1,0 +1,10 @@
+{
+  "name": "wms-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sistema WMS - backend y frontend en subcarpetas",
+  "scripts": {
+    "build": "cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install",
+    "start": "cd backend && node server.js"
+  }
+}

@@ -675,13 +675,18 @@ router.post('/:almacenId/carriles/:carrilId/posiciones/:posicionId/stock', async
     const usuario_id = req.user.id;
 
     // Validaciones
-    if (!producto_id || !referencia || !fecha_ingreso || !cantidad_bultos) {
+    if (!producto_id || !referencia || !fecha_ingreso) {
       return res.status(400).json({ message: 'Faltan campos requeridos' });
     }
-
-    if (cantidad_bultos < 1) {
-      return res.status(400).json({ message: 'La cantidad de bultos debe ser mayor a 0' });
+    const bultosNum = Number(cantidad_bultos);
+    if (cantidad_bultos == null || cantidad_bultos === '' || Number.isNaN(bultosNum) || bultosNum < 0) {
+      return res.status(400).json({ message: 'La cantidad de bultos es requerida y no puede ser negativa' });
     }
+    const pesoAdicionalNum = Number(peso_adicional) || 0;
+    if (bultosNum === 0 && pesoAdicionalNum <= 0) {
+      return res.status(400).json({ message: 'Debe ingresar al menos 1 bulto o un peso adicional (saldo) mayor a 0' });
+    }
+    const cantidadBultos = Math.max(0, Number.isInteger(bultosNum) ? bultosNum : parseInt(cantidad_bultos, 10) || 0);
 
     await client.query('BEGIN');
 
@@ -725,9 +730,9 @@ router.post('/:almacenId/carriles/:carrilId/posiciones/:posicionId/stock', async
     // Calcular total_kg (peso_adicional siempre en KG)
     let total_kg;
     if (unidad_medida === 'KG') {
-      total_kg = cantidad_bultos * formato + pesoAdicional;
+      total_kg = cantidadBultos * formato + pesoAdicional;
     } else {
-      total_kg = (cantidad_bultos * formato) / 2.2046 + pesoAdicional;
+      total_kg = (cantidadBultos * formato) / 2.2046 + pesoAdicional;
     }
 
     const descPosicion = await descripcionPosicion(client, posicionId);
@@ -744,7 +749,7 @@ router.post('/:almacenId/carriles/:carrilId/posiciones/:posicionId/stock', async
     let stockCreado;
     if (existente.rows.length > 0) {
       const row = existente.rows[0];
-      const nuevaCantidad = (Number(row.cantidad_bultos) || 0) + cantidad_bultos;
+      const nuevaCantidad = (Number(row.cantidad_bultos) || 0) + cantidadBultos;
       const nuevoTotalKg = (Number(row.total_kg) || 0) + total_kg;
       const nuevoPesoAdj = (Number(row.peso_adicional) || 0) + pesoAdicional;
       const upd = await client.query(
@@ -760,7 +765,7 @@ router.post('/:almacenId/carriles/:carrilId/posiciones/:posicionId/stock', async
          (posicion_id, producto_id, lote, referencia, fecha_ingreso, cantidad_bultos, peso_adicional, total_kg)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
-        [posicionId, producto_id, lote || null, referencia, fecha_ingreso, cantidad_bultos, pesoAdicional, total_kg]
+        [posicionId, producto_id, lote || null, referencia, fecha_ingreso, cantidadBultos, pesoAdicional, total_kg]
       );
       stockCreado = stockResult.rows[0];
     }
@@ -780,7 +785,7 @@ router.post('/:almacenId/carriles/:carrilId/posiciones/:posicionId/stock', async
       [
         movimientoId,
         producto_id,
-        cantidad_bultos,
+        cantidadBultos,
         total_kg,
         pesoAdicional,
         almacenId,
@@ -814,8 +819,19 @@ router.put('/:almacenId/carriles/:carrilId/posiciones/:posicionId/stock/:stockId
     const { referencia, lote, fecha_ingreso, cantidad_bultos, peso_adicional, numero_guia, producto_id: bodyProductoId } = req.body;
     const usuario_id = req.user?.id;
 
-    if (!referencia || (cantidad_bultos == null || cantidad_bultos === '')) {
-      return res.status(400).json({ message: 'Faltan campos requeridos (referencia, cantidad_bultos)' });
+    if (!referencia) {
+      return res.status(400).json({ message: 'La referencia es requerida' });
+    }
+    if (cantidad_bultos == null || cantidad_bultos === '') {
+      return res.status(400).json({ message: 'La cantidad de bultos es requerida' });
+    }
+    const bultosPut = parseInt(cantidad_bultos, 10);
+    if (Number.isNaN(bultosPut) || bultosPut < 0) {
+      return res.status(400).json({ message: 'La cantidad de bultos no puede ser negativa' });
+    }
+    const pesoAdjPut = Number(peso_adicional) || 0;
+    if (bultosPut === 0 && pesoAdjPut <= 0) {
+      return res.status(400).json({ message: 'Debe ingresar al menos 1 bulto o un peso adicional (saldo) mayor a 0' });
     }
     // Normalizar fecha a YYYY-MM-DD para PostgreSQL
     let fechaIngresoNorm = null;
@@ -871,7 +887,7 @@ router.put('/:almacenId/carriles/:carrilId/posiciones/:posicionId/stock/:stockId
     }
 
     const pesoAdicional = Number(peso_adicional) || 0;
-    const bultos = parseInt(cantidad_bultos, 10) || 0;
+    const bultos = bultosPut;
 
     // Recalcular total_kg (peso_adicional siempre en KG)
     let total_kg;
