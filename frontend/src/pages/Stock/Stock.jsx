@@ -457,7 +457,7 @@ const Stock = () => {
                     const reportTitle = [detalleItem.codigo, detalleItem.descripcion || detalleItem.producto_nombre, detalleItem.presentacion].filter(Boolean).join(' — ')
                     const reportRows = lotesOrdenados.map((key) => {
                       const g = byLote[key]
-                      const totalKgReal = g.totalKg + g.totalPesoAdj
+                      const totalKgReal = g.totalKg
                       return {
                         lote: g.lote,
                         total_bultos: g.totalBultos,
@@ -526,7 +526,7 @@ const Stock = () => {
                   const lotesOrdenados = Object.keys(byLote).sort((a, b) => (a === '(Sin lote)' ? 1 : b === '(Sin lote)' ? -1 : a.localeCompare(b)))
                   return lotesOrdenados.map((key) => {
                     const g = byLote[key]
-                    const totalKgReal = g.totalKg + g.totalPesoAdj
+                    const totalKgReal = g.totalKg
                     const expandido = expandidosLotes.has(key)
                     const toggleLote = () => {
                       setExpandidosLotes((prev) => {
