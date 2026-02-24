@@ -248,6 +248,7 @@ router.get('/', async (req, res) => {
       `SELECT 
         s.id AS stock_posicion_id,
         s.producto_id,
+        s.lote,
         s.cantidad_bultos,
         s.peso_adicional,
         s.total_kg,
@@ -279,6 +280,7 @@ router.get('/', async (req, res) => {
       if (!ubicaPorProducto.has(key)) ubicaPorProducto.set(key, []);
       ubicaPorProducto.get(key).push({
         stock_posicion_id: row.stock_posicion_id,
+        lote: row.lote != null ? String(row.lote).trim() : '',
         almacen_id: row.almacen_id,
         almacen_nombre: row.almacen_nombre,
         carril_id: row.carril_id,

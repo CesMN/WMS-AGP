@@ -173,6 +173,7 @@ const Ingresos = () => {
               { key: 'especie_nombre', label: 'Especie' },
               { key: 'producto_codigo', label: 'Código producto' },
               { key: 'producto_descripcion', label: 'Producto' },
+              { key: 'lote', label: 'Lote' },
               { key: 'cantidad_bultos', label: 'Bultos' },
               { key: 'total_kg', label: 'Total KG' },
               { key: 'ubicacion', label: 'Ubicación' },
@@ -195,6 +196,7 @@ const Ingresos = () => {
                       especie_nombre: g.especie_nombre,
                       producto_codigo: d.producto_codigo,
                       producto_descripcion: d.producto_descripcion,
+                      lote: d.lote ?? '',
                       cantidad_bultos: d.cantidad_bultos,
                       total_kg: d.total_kg,
                       ubicacion,
@@ -391,6 +393,7 @@ const Ingresos = () => {
                   <thead className="bg-gray-50 dark:bg-gray-900/50">
                     <tr>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Producto</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Lote</th>
                       <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Bultos</th>                     
                       <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Peso adj. (kg)</th>
                       <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Total (kg)</th>
@@ -410,6 +413,7 @@ const Ingresos = () => {
                       return lineasUnicas.map((d) => (
                         <tr key={d.stock_posicion_id ?? d.id}>
                           <td className="px-3 py-2">{d.producto_codigo} — {d.producto_descripcion} — {d.producto_presentacion}</td>
+                          <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.lote ?? '-'}</td>
                           <td className="px-3 py-2 text-right">{d.cantidad_bultos}</td>
                           <td className="px-3 py-2 text-right">{Number(d.peso_adicional || 0).toFixed(2)}</td>
                           <td className="px-3 py-2 text-right">{Number(d.total_kg).toFixed(2)}</td>

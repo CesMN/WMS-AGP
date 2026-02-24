@@ -1,6 +1,6 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Package, Search, ChevronDown, ChevronRight, MapPin, Loader2, Info } from 'lucide-react'
+import { Package, Search, ChevronDown, ChevronRight, MapPin, Loader2, Info, Layers } from 'lucide-react'
 import Modal from '../../components/Modal'
 import PaginationBar from '../../components/PaginationBar'
 import ExportDropdown from '../../components/ExportDropdown'
@@ -36,6 +36,7 @@ const Stock = () => {
   const [posicionesList, setPosicionesList] = useState([])
   const [expandidoId, setExpandidoId] = useState(null)
   const [detalleItem, setDetalleItem] = useState(null)
+  const [verLotes, setVerLotes] = useState(false)
 
   useEffect(() => {
     if (clienteFromUrl) setFiltroCliente(clienteFromUrl)
@@ -382,6 +383,7 @@ const Stock = () => {
                                   >
                                     <MapPin className="w-4 h-4 text-primary-600" />
                                     <span>{u.almacen_nombre} → {u.carril_nombre} → N{u.numero_nivel} → P{u.numero_posicion}</span>
+                                    {u.lote ? <span className="text-xs font-medium text-primary-600 dark:text-primary-400">Lote: {u.lote}</span> : null}
                                     <span className="text-gray-500 dark:text-gray-400">({u.cantidad_bultos} bultos{u.peso_adicional ? `, ${Number(u.peso_adicional).toFixed(2)} kg adj.` : ''}, {(Number(u.total_kg) > 0 ? Number(u.total_kg) : Number(u.total_kg) + Number(u.peso_adicional || 0)).toFixed(2)} kg total)</span>
                                   </button>
                                 ))}
@@ -420,12 +422,80 @@ const Stock = () => {
 
       <Modal
         isOpen={!!detalleItem}
-        onClose={() => setDetalleItem(null)}
-        title="Detalle del producto"
+        onClose={() => { setDetalleItem(null); setVerLotes(false) }}
+        title={verLotes ? `Lotes — ${detalleItem?.codigo ?? ''}` : 'Detalle del producto'}
         size="lg"
       >
         {detalleItem && (
           <div className="space-y-5 overflow-y-auto max-h-[70vh]">
+            {verLotes ? (
+              <div className="space-y-4">
+                <button
+                  type="button"
+                  onClick={() => setVerLotes(false)}
+                  className="text-sm text-primary-600 dark:text-primary-400 hover:underline"
+                >
+                  ← Volver al detalle
+                </button>
+                {(() => {
+                  const ubs = detalleItem.ubicaciones || []
+                  const byLote = {}
+                  ubs.forEach((u) => {
+                    const key = (u.lote != null && String(u.lote).trim() !== '') ? String(u.lote).trim() : '(Sin lote)'
+                    if (!byLote[key]) {
+                      byLote[key] = { lote: key, ubicaciones: [], totalBultos: 0, totalKg: 0, totalPesoAdj: 0 }
+                    }
+                    byLote[key].ubicaciones.push(u)
+                    byLote[key].totalBultos += Number(u.cantidad_bultos) || 0
+                    byLote[key].totalPesoAdj += Number(u.peso_adicional) || 0
+                    byLote[key].totalKg += Number(u.total_kg) || 0
+                  })
+                  const lotesOrdenados = Object.keys(byLote).sort((a, b) => (a === '(Sin lote)' ? 1 : b === '(Sin lote)' ? -1 : a.localeCompare(b)))
+                  return lotesOrdenados.map((key) => {
+                    const g = byLote[key]
+                    const totalKgReal = g.totalKg + g.totalPesoAdj
+                    return (
+                      <div key={key} className="rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/50 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                          <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                            <Layers className="w-4 h-4 text-primary-600" />
+                            Lote: {g.lote}
+                          </h3>
+                          <span className="text-sm text-gray-600 dark:text-gray-400">
+                            {g.totalBultos} bultos · {totalKgReal.toFixed(2)} kg total
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {g.ubicaciones.map((u, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => { setDetalleItem(null); setVerLotes(false); irAUbicacion(u.almacen_id, u.carril_id, u.posicion_id) }}
+                              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 hover:bg-primary-50 dark:hover:bg-primary-900/20 text-left text-sm"
+                            >
+                              <MapPin className="w-4 h-4 text-primary-600 flex-shrink-0" />
+                              <span>{u.almacen_nombre} → {u.carril_nombre} → N{u.numero_nivel} → P{u.numero_posicion}</span>
+                              <span className="text-gray-500 dark:text-gray-400">({u.cantidad_bultos} bultos{u.peso_adicional ? `, ${Number(u.peso_adicional).toFixed(2)} kg adj.` : ''})</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })
+                })()}
+              </div>
+            ) : (
+            <>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setVerLotes(true)}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 hover:bg-primary-200 dark:hover:bg-primary-800/40"
+              >
+                <Layers className="w-4 h-4" />
+                Ver lotes
+              </button>
+            </div>
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <span className="text-gray-500 dark:text-gray-400 block text-xs font-medium">Código</span>
@@ -480,12 +550,14 @@ const Stock = () => {
                       type="button"
                       onClick={() => {
                         setDetalleItem(null)
+                        setVerLotes(false)
                         irAUbicacion(u.almacen_id, u.carril_id, u.posicion_id)
                       }}
                       className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/50 hover:bg-primary-50 dark:hover:bg-primary-900/20 text-left text-sm w-full sm:w-auto"
                     >
                       <MapPin className="w-4 h-4 text-primary-600 flex-shrink-0" />
                       <span>{u.almacen_nombre} → {u.carril_nombre} → N{u.numero_nivel} → P{u.numero_posicion}</span>
+                      {u.lote ? <span className="text-xs font-medium text-primary-600 dark:text-primary-400">Lote: {u.lote}</span> : null}
                       <span className="text-gray-500 dark:text-gray-400">({u.cantidad_bultos} bultos{u.peso_adicional ? `, ${Number(u.peso_adicional).toFixed(2)} kg adj.` : ''}, {(Number(u.total_kg) > 0 ? Number(u.total_kg) : Number(u.total_kg) + Number(u.peso_adicional || 0)).toFixed(2)} kg total)</span>
                     </button>
                   ))
@@ -494,6 +566,8 @@ const Stock = () => {
                 )}
               </div>
             </div>
+            </>
+            )}
           </div>
         )}
       </Modal>

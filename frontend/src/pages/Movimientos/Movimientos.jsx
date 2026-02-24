@@ -125,6 +125,7 @@ const Movimientos = () => {
                 { key: 'motivo', label: 'Motivo' },
                 { key: 'producto_codigo', label: 'Código producto' },
                 { key: 'producto_descripcion', label: 'Producto' },
+                { key: 'lote', label: 'Lote' },
                 { key: 'cantidad_bultos', label: 'Bultos' },
                 { key: 'total_kg', label: 'Total KG' },
               ],
@@ -139,6 +140,7 @@ const Movimientos = () => {
                   motivo: m.motivo,
                   producto_codigo: d.producto_codigo,
                   producto_descripcion: d.producto_descripcion,
+                  lote: d.lote ?? '',
                   cantidad_bultos: d.cantidad_bultos,
                   total_kg: d.total_kg,
                 })))
@@ -376,6 +378,7 @@ const Movimientos = () => {
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Estado</th>
                       )}
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Producto</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Lote</th>
                       <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Bultos</th>
                       <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Peso adj. (kg)</th>
                       <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Total (kg)</th>
@@ -406,6 +409,7 @@ const Movimientos = () => {
                               <span className="text-gray-500 dark:text-gray-400 block text-xs">{d.producto_presentacion}</span>
                             )}
                           </td>
+                          <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{d.lote ?? '-'}</td>
                           <td className="px-3 py-2 text-right font-medium text-gray-900 dark:text-white">{d.cantidad_bultos}</td>
                           <td className="px-3 py-2 text-right text-gray-600 dark:text-gray-400">{Number(d.peso_adicional || 0).toFixed(2)}</td>
                           <td className="px-3 py-2 text-right font-medium text-gray-900 dark:text-white">{Number(d.total_kg).toFixed(2)}</td>
@@ -418,7 +422,7 @@ const Movimientos = () => {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={detalle.detalles?.some((d) => d.tipo_linea) ? 6 : 5} className="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
+                        <td colSpan={detalle.detalles?.some((d) => d.tipo_linea) ? 8 : 7} className="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
                           Sin líneas.
                         </td>
                       </tr>

@@ -431,9 +431,11 @@ router.get('/:id', async (req, res) => {
         c.nombre AS carril_nombre,
         n.numero_nivel,
         pos.numero_posicion,
-        pos.nombre AS posicion_nombre
+        pos.nombre AS posicion_nombre,
+        sp.lote AS lote
        FROM movimiento_detalles md
        JOIN productos p ON p.id = md.producto_id
+       LEFT JOIN stock_posiciones sp ON sp.id = md.stock_posicion_id
        LEFT JOIN clientes cli ON cli.id = p.cliente_id
        LEFT JOIN especies e ON e.id = p.especie_id
        LEFT JOIN almacenes a ON a.id = md.almacen_id
@@ -448,6 +450,7 @@ router.get('/:id', async (req, res) => {
     const detalles = detalleResult.rows.map((d) => ({
       id: d.id,
       stock_posicion_id: d.stock_posicion_id || null,
+      lote: d.lote != null ? String(d.lote).trim() : null,
       producto_id: d.producto_id,
       producto_codigo: d.producto_codigo,
       producto_nombre: d.producto_nombre,
