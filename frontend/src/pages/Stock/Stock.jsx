@@ -1,6 +1,6 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Package, Search, ChevronDown, ChevronRight, MapPin, Loader2, Info, Layers } from 'lucide-react'
+import { Package, Search, ChevronDown, ChevronRight, MapPin, Loader2, Info, Layers, Download } from 'lucide-react'
 import Modal from '../../components/Modal'
 import PaginationBar from '../../components/PaginationBar'
 import ExportDropdown from '../../components/ExportDropdown'
@@ -9,13 +9,14 @@ import { almacenesApi } from '../../api/almacenes'
 import { especiesApi } from '../../api/especies'
 import { clientesApi } from '../../api/clientes'
 import { useConfig } from '../../contexts/ConfigContext'
+import { exportToPdf, exportToExcel } from '../../utils/exportReport'
 import toast from 'react-hot-toast'
 
 const Stock = () => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const clienteFromUrl = searchParams.get('cliente_id') || ''
-  const { registrosPorPagina } = useConfig()
+  const { registrosPorPagina, nombreEmpresa } = useConfig()
   const [loading, setLoading] = useState(true)
   const [almacenes, setAlmacenes] = useState([])
   const [especies, setEspecies] = useState([])
@@ -430,13 +431,84 @@ const Stock = () => {
           <div className="space-y-5 overflow-y-auto max-h-[70vh]">
             {verLotes ? (
               <div className="space-y-4">
-                <button
-                  type="button"
-                  onClick={() => setVerLotes(false)}
-                  className="text-sm text-primary-600 dark:text-primary-400 hover:underline"
-                >
-                  ← Volver al detalle
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVerLotes(false)}
+                    className="text-sm text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    ← Volver al detalle
+                  </button>
+                  {(() => {
+                    const ubs = detalleItem.ubicaciones || []
+                    const byLote = {}
+                    ubs.forEach((u) => {
+                      const key = (u.lote != null && String(u.lote).trim() !== '') ? String(u.lote).trim() : '(Sin lote)'
+                      if (!byLote[key]) {
+                        byLote[key] = { lote: key, ubicaciones: [], totalBultos: 0, totalKg: 0, totalPesoAdj: 0 }
+                      }
+                      byLote[key].ubicaciones.push(u)
+                      byLote[key].totalBultos += Number(u.cantidad_bultos) || 0
+                      byLote[key].totalPesoAdj += Number(u.peso_adicional) || 0
+                      byLote[key].totalKg += Number(u.total_kg) || 0
+                    })
+                    const lotesOrdenados = Object.keys(byLote).sort((a, b) => (a === '(Sin lote)' ? 1 : b === '(Sin lote)' ? -1 : a.localeCompare(b)))
+                    const reportTitle = [detalleItem.codigo, detalleItem.descripcion || detalleItem.producto_nombre, detalleItem.presentacion].filter(Boolean).join(' — ')
+                    const reportRows = lotesOrdenados.map((key) => {
+                      const g = byLote[key]
+                      const totalKgReal = g.totalKg + g.totalPesoAdj
+                      return {
+                        lote: g.lote,
+                        total_bultos: g.totalBultos,
+                        saldo_kg: Number(g.totalPesoAdj).toFixed(2),
+                        total_kg: Number(totalKgReal).toFixed(2),
+                      }
+                    })
+                    const reportColumns = [
+                      { key: 'lote', label: 'Lote' },
+                      { key: 'total_bultos', label: 'Total bultos' },
+                      { key: 'saldo_kg', label: 'Saldo (kg)' },
+                      { key: 'total_kg', label: 'Total KG' },
+                    ]
+                    const appName = (nombreEmpresa && nombreEmpresa.trim()) ? nombreEmpresa.trim() : 'Sistema WMS'
+                    const filtersText = `Código: ${detalleItem.codigo || '-'}  |  Descripción: ${(detalleItem.descripcion || detalleItem.producto_nombre || '-').toString().slice(0, 60)}  |  Presentación: ${detalleItem.presentacion || '-'}`
+                    const titleReport = reportTitle.slice(0, 100)
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            try {
+                              exportToPdf(reportRows, reportColumns, titleReport, filtersText, '', { appName })
+                              toast.success('Informe PDF descargado')
+                            } catch (e) {
+                              toast.error('Error al generar PDF')
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-200 hover:bg-primary-100 dark:hover:bg-primary-900/30 hover:text-primary-700 dark:hover:text-primary-300"
+                        >
+                          <Download className="w-4 h-4" />
+                          Exportar PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            try {
+                              exportToExcel(reportRows, reportColumns, titleReport, filtersText, '', { appName })
+                              toast.success('Informe Excel descargado')
+                            } catch (e) {
+                              toast.error('Error al generar Excel')
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-200 hover:bg-primary-100 dark:hover:bg-primary-900/30 hover:text-primary-700 dark:hover:text-primary-300"
+                        >
+                          <Download className="w-4 h-4" />
+                          Exportar Excel
+                        </button>
+                      </>
+                    )
+                  })()}
+                </div>
                 {(() => {
                   const ubs = detalleItem.ubicaciones || []
                   const byLote = {}
