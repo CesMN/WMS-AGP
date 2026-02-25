@@ -24,6 +24,7 @@ const CLAVES = {
   LOGO_EMPRESA: 'logo_empresa',
   TAMAÑO_LOGO: 'tamaño_logo',
   NOMBRE_EMPRESA: 'nombre_empresa',
+  LOTE_REPUBLICANO_ANOS: 'lote_republicano_anos',
 }
 
 export const ConfigProvider = ({ children }) => {
@@ -110,6 +111,16 @@ export const ConfigProvider = ({ children }) => {
     logoEmpresa: getValor(CLAVES.LOGO_EMPRESA) || '',
     tamañoLogo: Math.min(120, Math.max(24, parseInt(getValor(CLAVES.TAMAÑO_LOGO), 10) || 48)),
     nombreEmpresa: getValor(CLAVES.NOMBRE_EMPRESA) || 'Sistema WMS',
+    lotRepublicanoAnos: (() => {
+      const raw = getValor(CLAVES.LOTE_REPUBLICANO_ANOS)
+      if (raw == null || raw === '') return {}
+      try {
+        const parsed = JSON.parse(raw)
+        return typeof parsed === 'object' && parsed !== null ? parsed : {}
+      } catch {
+        return {}
+      }
+    })(),
     CLAVES,
   }
 

@@ -33,6 +33,11 @@ router.get('/', async (req, res) => {
        SELECT 'tamaño_logo', '48', 'number', 'Altura del logo en el menú lateral (px)'
        WHERE NOT EXISTS (SELECT 1 FROM configuracion WHERE clave = 'tamaño_logo')`
     );
+    await pool.query(
+      `INSERT INTO configuracion (clave, valor, tipo, descripcion)
+       SELECT 'lote_republicano_anos', '{}', 'json', 'Mapa letra→año para lotes republicanos (ej. {"H":"2025"}). Solo administradores.'
+       WHERE NOT EXISTS (SELECT 1 FROM configuracion WHERE clave = 'lote_republicano_anos')`
+    );
     const global = await pool.query(
       `SELECT id, clave, valor, tipo, descripcion, updated_at FROM configuracion ORDER BY clave`
     );

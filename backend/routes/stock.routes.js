@@ -85,6 +85,27 @@ router.get('/resumen-por-cliente', async (req, res) => {
 });
 
 /**
+ * GET /api/stock/lote-republicano-letras-anos
+ * Devuelve las letras de año distintas que aparecen en lotes con formato republicano (ej. 29N-H).
+ */
+router.get('/lote-republicano-letras-anos', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT DISTINCT UPPER((regexp_match(TRIM(lote), '^[0-9]+[REPUBLICANOS]-([A-Za-z])$', 'i'))[1]) AS letra
+      FROM stock_posiciones
+      WHERE lote IS NOT NULL AND TRIM(lote) <> ''
+        AND (regexp_match(TRIM(lote), '^[0-9]+[REPUBLICANOS]-([A-Za-z])$', 'i')) IS NOT NULL
+      ORDER BY 1
+    `);
+    const letras = (result.rows || []).map((r) => r.letra).filter(Boolean);
+    res.json({ letras });
+  } catch (error) {
+    console.error('Error obteniendo letras año republicano:', error);
+    res.status(500).json({ message: 'Error al obtener letras de año' });
+  }
+});
+
+/**
  * GET /api/stock
  * Inventario consolidado por producto.
  * Query: almacen_id, carril_id, nivel_id, posicion_id, especie_id, cliente_id, q

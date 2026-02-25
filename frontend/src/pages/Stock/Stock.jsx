@@ -10,13 +10,14 @@ import { especiesApi } from '../../api/especies'
 import { clientesApi } from '../../api/clientes'
 import { useConfig } from '../../contexts/ConfigContext'
 import { exportToPdf, exportToExcel } from '../../utils/exportReport'
+import { traducirLoteAFecha } from '../../utils/traducirLoteAFecha'
 import toast from 'react-hot-toast'
 
 const Stock = () => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const clienteFromUrl = searchParams.get('cliente_id') || ''
-  const { registrosPorPagina, nombreEmpresa } = useConfig()
+  const { registrosPorPagina, nombreEmpresa, lotRepublicanoAnos } = useConfig()
   const [loading, setLoading] = useState(true)
   const [almacenes, setAlmacenes] = useState([])
   const [especies, setEspecies] = useState([])
@@ -385,7 +386,14 @@ const Stock = () => {
                                   >
                                     <MapPin className="w-4 h-4 text-primary-600" />
                                     <span>{u.almacen_nombre} → {u.carril_nombre} → N{u.numero_nivel} → P{u.numero_posicion}</span>
-                                    {u.lote ? <span className="text-xs font-medium text-primary-600 dark:text-primary-400">Lote: {u.lote}</span> : null}
+                                    {u.lote ? (
+                                      <span className="text-xs font-medium text-primary-600 dark:text-primary-400">
+                                        Lote: {u.lote}
+                                        {traducirLoteAFecha(u.lote, lotRepublicanoAnos) && (
+                                          <span className="font-normal text-gray-500 dark:text-gray-400 ml-1">({traducirLoteAFecha(u.lote, lotRepublicanoAnos)})</span>
+                                        )}
+                                      </span>
+                                    ) : null}
                                     <span className="text-gray-500 dark:text-gray-400">({u.cantidad_bultos} bultos{u.peso_adicional ? `, ${Number(u.peso_adicional).toFixed(2)} kg adj.` : ''}, {(Number(u.total_kg) > 0 ? Number(u.total_kg) : Number(u.total_kg) + Number(u.peso_adicional || 0)).toFixed(2)} kg total)</span>
                                   </button>
                                 ))}
@@ -551,6 +559,11 @@ const Stock = () => {
                             )}
                             <Layers className="w-4 h-4 text-primary-600" />
                             Lote: {g.lote}
+                            {traducirLoteAFecha(g.lote, lotRepublicanoAnos) && (
+                              <span className="text-xs font-normal text-gray-500 dark:text-gray-400 ml-1">
+                                ({traducirLoteAFecha(g.lote, lotRepublicanoAnos)})
+                              </span>
+                            )}
                           </h3>
                           <span className="text-sm text-gray-600 dark:text-gray-400">
                             {g.totalBultos} bultos · {totalKgReal.toFixed(2)} kg total · {g.ubicaciones.length} ubicación{g.ubicaciones.length !== 1 ? 'es' : ''}

@@ -3,6 +3,7 @@ import axios from 'axios'
 export const stockApi = {
   resumen: () => axios.get('/api/stock/resumen'),
   resumenPorCliente: () => axios.get('/api/stock/resumen-por-cliente'),
+  loteRepublicanoLetrasAnos: () => axios.get('/api/stock/lote-republicano-letras-anos'),
   listar: (params = {}) => {
     const searchParams = new URLSearchParams()
     if (params.almacen_id) searchParams.set('almacen_id', params.almacen_id)

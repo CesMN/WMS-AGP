@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { Settings, Loader2, Save, FolderOpen } from 'lucide-react'
+import { Settings, Loader2, Save, FolderOpen, Calendar } from 'lucide-react'
 import { configuracionApi } from '../../api/configuracion'
+import { stockApi } from '../../api/stock'
 import { useConfig } from '../../contexts/ConfigContext'
 import toast from 'react-hot-toast'
 
@@ -19,14 +20,34 @@ const Configuracion = () => {
   const [savingId, setSavingId] = useState(null)
   const [valores, setValores] = useState({})
   const fileInputRef = useRef(null)
+  const [letrasAno, setLetrasAno] = useState([])
+  const [loadingLetras, setLoadingLetras] = useState(false)
+  const [anosPorLetra, setAnosPorLetra] = useState({})
+  const [savingLoteAnos, setSavingLoteAnos] = useState(false)
 
   useEffect(() => {
     if (items?.length) {
       const ini = {}
       items.forEach((c) => { ini[c.id] = c.valor })
       setValores((prev) => ({ ...prev, ...ini }))
+      const item = items.find((c) => (c.clave || '').toLowerCase() === 'lote_republicano_anos')
+      if (item && item.valor) {
+        try {
+          const parsed = JSON.parse(item.valor)
+          if (typeof parsed === 'object' && parsed !== null) setAnosPorLetra(parsed)
+        } catch {}
+      }
     }
   }, [items])
+
+  useEffect(() => {
+    setLoadingLetras(true)
+    stockApi
+      .loteRepublicanoLetrasAnos()
+      .then((r) => setLetrasAno(r.data?.letras || []))
+      .catch(() => setLetrasAno([]))
+      .finally(() => setLoadingLetras(false))
+  }, [])
 
   const handleChange = (id, value) => {
     setValores((prev) => ({ ...prev, [id]: value }))
@@ -48,6 +69,37 @@ const Configuracion = () => {
   }
 
   const getItemByClave = (clave) => (items || []).find((c) => (c.clave || '').toLowerCase() === clave.toLowerCase())
+
+  const handleGuardarLoteAnos = async () => {
+    const item = getItemByClave('lote_republicano_anos')
+    if (!item) {
+      toast.error('No existe la opción de letras de año. Ejecute las migraciones de la base de datos.')
+      return
+    }
+    try {
+      setSavingLoteAnos(true)
+      const valor = JSON.stringify(anosPorLetra)
+      await configuracionApi.actualizar(item.id, { valor })
+      await refresh()
+      toast.success('Letras de año guardadas. La traducción de lotes republicanos se actualizará.')
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar')
+    } finally {
+      setSavingLoteAnos(false)
+    }
+  }
+
+  const setAnoLetra = (letra, ano) => {
+    setAnosPorLetra((prev) => {
+      const next = { ...prev }
+      const v = String(ano).trim()
+      if (v === '') delete next[letra]
+      else next[letra] = v
+      return next
+    })
+  }
+
+  const letrasParaLista = [...new Set([...letrasAno, ...Object.keys(anosPorLetra)])].sort()
 
   const handleLogoFile = (item, e) => {
     const file = e.target.files?.[0]
@@ -288,6 +340,64 @@ const Configuracion = () => {
       </div>
 
       {/* 2. Tamaños de Textos: con ejemplo en tiempo real */}
+      {/* 3. Lotes republicanos - Letras de año */}
+      {getItemByClave('lote_republicano_anos') && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden mb-6">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              <Calendar className="w-5 h-5" />
+              Lotes republicanos — Letras de año
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+              Asigne el año (ej. 2025) a cada letra que aparece en los lotes con formato republicano (ej. 29N-H). Así se mostrará la fecha traducida al costado del lote.
+            </p>
+          </div>
+          <div className="p-4">
+            {loadingLetras ? (
+              <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Cargando letras encontradas en stock...
+              </div>
+            ) : letrasParaLista.length === 0 ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                No hay lotes con formato republicano en el sistema. Cuando ingrese lotes como 29N-H, aquí aparecerán las letras de año para configurarlas.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {letrasParaLista.map((letra) => (
+                    <div key={letra} className="flex items-center gap-2">
+                      <span className="font-mono font-semibold text-gray-900 dark:text-white w-8">"{letra}"</span>
+                      <span className="text-gray-500 dark:text-gray-400">→</span>
+                      <input
+                        type="number"
+                        min={2000}
+                        max={2099}
+                        placeholder="Año (ej. 2025)"
+                        value={anosPorLetra[letra] ?? ''}
+                        onChange={(e) => setAnoLetra(letra, e.target.value)}
+                        className="flex-1 min-w-0 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-[var(--color-primary,#2563eb)] dark:bg-gray-700 dark:text-white text-sm"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGuardarLoteAnos}
+                  disabled={savingLoteAnos}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-50"
+                  style={{ backgroundColor: 'var(--color-primary, #2563eb)' }}
+                >
+                  {savingLoteAnos ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  Guardar letras de año
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tamaños de Textos: con ejemplo en tiempo real */}
       {itemsFuente.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden mb-6">
           <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">

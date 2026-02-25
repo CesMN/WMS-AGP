@@ -15,5 +15,6 @@ psql -U %USUARIO% -d %BASE% -f "%~dp0add_config_fuentes.sql"
 psql -U %USUARIO% -d %BASE% -f "%~dp0add_numero_guia_movimientos.sql"
 psql -U %USUARIO% -d %BASE% -f "%~dp0add_cliente_origen_despachos.sql"
 psql -U %USUARIO% -d %BASE% -f "%~dp0despacho_detalles_allow_null_stock_posicion.sql"
+psql -U %USUARIO% -d %BASE% -f "%~dp0add_lote_republicano_anos_config.sql"
 echo Migraciones finalizadas.
 pause
