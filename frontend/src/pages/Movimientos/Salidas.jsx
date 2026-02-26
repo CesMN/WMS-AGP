@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowUpFromLine, Loader2, Info, Search, X } from 'lucide-react'
+import { ArrowUpFromLine, Loader2, Info, Search, X, ChevronRight, ChevronDown, LayoutList, MapPin } from 'lucide-react'
 import Modal from '../../components/Modal'
 import PaginationBar from '../../components/PaginationBar'
 import ExportDropdown from '../../components/ExportDropdown'
@@ -19,6 +19,8 @@ const Salidas = () => {
   const [detalleDespachoId, setDetalleDespachoId] = useState(null)
   const [loadingDetalle, setLoadingDetalle] = useState(false)
   const [detalle, setDetalle] = useState(null)
+  const [vistaLineasSalida, setVistaLineasSalida] = useState('resumida')
+  const [expandidosGruposSalida, setExpandidosGruposSalida] = useState(new Set())
   const [clientes, setClientes] = useState([])
   const [especies, setEspecies] = useState([])
   const [filtroNumeroGuia, setFiltroNumeroGuia] = useState('')
@@ -286,7 +288,7 @@ const Salidas = () => {
 
       <Modal
         isOpen={!!detalleDespachoId}
-        onClose={() => setDetalleDespachoId(null)}
+        onClose={() => { setDetalleDespachoId(null); setVistaLineasSalida('resumida'); setExpandidosGruposSalida(new Set()) }}
         title={`Detalle salida — ${detalle?.guia_salida ?? detalle?.referencia_salida ?? ''}`}
         size="xl"
       >
@@ -307,38 +309,116 @@ const Salidas = () => {
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Saldo (peso adj.)</span>{(Number(detalle.total_adicional_despacho) || 0).toFixed(2)} kg</div>
             </div>
             <div>
-              <h4 className="font-semibold mb-3">Líneas</h4>
-              <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-600">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 dark:bg-gray-900/50">
-                    <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Producto</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Lote</th>
-                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Bultos</th>
-                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Total (kg)</th>
-                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Peso adj. (kg)</th>
-                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Ubicación</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {(detalle.lineas || []).map((l) => (
-                      <tr key={l.id}>
-                        <td className="px-3 py-2">{l.producto_codigo} — {l.producto_descripcion} — {l.producto_presentacion}</td>
-                        <td className="px-3 py-2">{l.lote || '-'}</td>
-                        <td className="px-3 py-2 text-right">{l.cantidad_bultos}</td>
-                        <td className="px-3 py-2 text-right">{Number(l.total_kg).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-right">{Number(l.peso_adicional || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{l.ubicacion || '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h4 className="font-semibold text-gray-900 dark:text-white">Líneas</h4>
+                <button
+                  type="button"
+                  onClick={() => setVistaLineasSalida((v) => (v === 'resumida' ? 'ubicacion' : 'resumida'))}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-200 hover:bg-primary-100 dark:hover:bg-primary-900/30"
+                >
+                  {vistaLineasSalida === 'resumida' ? <MapPin className="w-4 h-4" /> : <LayoutList className="w-4 h-4" />}
+                  {vistaLineasSalida === 'resumida' ? 'Ver por ubicación' : 'Ver resumido por producto y lote'}
+                </button>
               </div>
-              <div className="mt-3 flex gap-4 text-sm font-medium">
+              <div className="mt-3 flex gap-4 text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
                 <span>Total bultos: {detalle.lineas?.reduce((s, l) => s + (Number(l.cantidad_bultos) || 0), 0) ?? 0}</span>
                 <span>Saldo (peso adj.): {(detalle.total_adicional_despacho != null ? Number(detalle.total_adicional_despacho) : (detalle.lineas?.reduce((s, l) => s + (Number(l.peso_adicional) || 0), 0) ?? 0)).toFixed(2)} kg</span>
                 <span>Total kg: {(detalle.total_kg_despacho != null ? detalle.total_kg_despacho : detalle.lineas?.reduce((s, l) => s + (Number(l.total_kg) || 0), 0) ?? 0).toFixed(2)}</span>
               </div>
+              {(detalle.lineas || []).length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400 py-3">Sin líneas.</p>
+              ) : vistaLineasSalida === 'resumida' ? (
+                (() => {
+                  const lineas = detalle.lineas || []
+                  const byKey = {}
+                  lineas.forEach((l) => {
+                    const key = `${l.producto_codigo || ''}|${l.lote ?? ''}`
+                    if (!byKey[key]) {
+                      byKey[key] = { codigo: l.producto_codigo, descripcion: l.producto_descripcion, presentacion: l.producto_presentacion, lote: l.lote ?? '', lineas: [] }
+                    }
+                    byKey[key].lineas.push(l)
+                  })
+                  const grupos = Object.entries(byKey).map(([key, g]) => ({
+                    key,
+                    ...g,
+                    totalBultos: g.lineas.reduce((s, l) => s + (Number(l.cantidad_bultos) || 0), 0),
+                    totalAdicional: g.lineas.reduce((s, l) => s + (Number(l.peso_adicional) || 0), 0),
+                    totalKg: g.lineas.reduce((s, l) => s + (Number(l.total_kg) || 0), 0),
+                  }))
+                  return (
+                    <div className="space-y-2">
+                      {grupos.map((gr) => {
+                        const expandido = expandidosGruposSalida.has(gr.key)
+                        const toggle = () => setExpandidosGruposSalida((prev) => { const n = new Set(prev); if (n.has(gr.key)) n.delete(gr.key); else n.add(gr.key); return n })
+                        return (
+                          <div key={gr.key} className="rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/50 overflow-hidden">
+                            <button type="button" onClick={toggle} className="w-full flex items-center justify-between gap-2 p-3 text-left hover:bg-gray-100 dark:hover:bg-gray-700/50">
+                              <span className="flex items-center gap-2 font-medium text-gray-900 dark:text-white">
+                                {expandido ? <ChevronDown className="w-4 h-4 text-primary-600" /> : <ChevronRight className="w-4 h-4 text-primary-600" />}
+                                {gr.codigo}{gr.descripcion ? ` — ${gr.descripcion}` : ''}{gr.presentacion ? ` · ${gr.presentacion}` : ''} {gr.lote ? `· Lote: ${gr.lote}` : ''}
+                              </span>
+                              <span className="text-sm text-gray-600 dark:text-gray-400">
+                                {gr.totalBultos} bultos · {gr.totalAdicional.toFixed(2)} kg adj. · {gr.totalKg.toFixed(2)} kg · {gr.lineas.length} ubicación{gr.lineas.length !== 1 ? 'es' : ''}
+                              </span>
+                            </button>
+                            {expandido && (
+                              <div className="border-t border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800">
+                                <table className="w-full text-sm">
+                                  <thead className="bg-gray-50 dark:bg-gray-900/50">
+                                    <tr>
+                                      <th className="px-3 py-1.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Ubicación</th>
+                                      <th className="px-3 py-1.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Bultos</th>
+                                      <th className="px-3 py-1.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Peso adj.</th>
+                                      <th className="px-3 py-1.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Total kg</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                                    {gr.lineas.map((l) => (
+                                      <tr key={l.id}>
+                                        <td className="px-3 py-1.5 text-gray-600 dark:text-gray-400 text-xs">{l.ubicacion || '-'}</td>
+                                        <td className="px-3 py-1.5 text-right">{l.cantidad_bultos}</td>
+                                        <td className="px-3 py-1.5 text-right">{Number(l.peso_adicional || 0).toFixed(2)}</td>
+                                        <td className="px-3 py-1.5 text-right font-medium">{Number(l.total_kg).toFixed(2)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-600">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 dark:bg-gray-900/50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Producto</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Lote</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Bultos</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Total (kg)</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Peso adj. (kg)</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Ubicación</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                      {(detalle.lineas || []).map((l) => (
+                        <tr key={l.id}>
+                          <td className="px-3 py-2">{l.producto_codigo} — {l.producto_descripcion} — {l.producto_presentacion}</td>
+                          <td className="px-3 py-2">{l.lote || '-'}</td>
+                          <td className="px-3 py-2 text-right">{l.cantidad_bultos}</td>
+                          <td className="px-3 py-2 text-right">{Number(l.total_kg).toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right">{Number(l.peso_adicional || 0).toFixed(2)}</td>
+                          <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{l.ubicacion || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         ) : null}

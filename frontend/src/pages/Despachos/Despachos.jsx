@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Truck, Plus, Loader2, Info, Edit, Trash2, Search } from 'lucide-react'
+import { Truck, Plus, Loader2, Info, Edit, Trash2, Search, ChevronRight, ChevronDown, LayoutList, MapPin } from 'lucide-react'
 import Modal from '../../components/Modal'
 import PaginationBar from '../../components/PaginationBar'
 import ExportDropdown from '../../components/ExportDropdown'
@@ -67,6 +67,8 @@ const Despachos = () => {
   const [modalForm, setModalForm] = useState(false)
   const [modalDetalle, setModalDetalle] = useState(null)
   const [detalle, setDetalle] = useState(null)
+  const [vistaLineasDetalle, setVistaLineasDetalle] = useState('resumida')
+  const [expandidosGruposDetalle, setExpandidosGruposDetalle] = useState(new Set())
   const [editId, setEditId] = useState(null)
   const [saving, setSaving] = useState(false)
   const [cambiandoEstado, setCambiandoEstado] = useState(null)
@@ -934,7 +936,7 @@ const Despachos = () => {
       </Modal>
 
       {/* Modal Ver detalle */}
-      <Modal isOpen={!!modalDetalle} onClose={() => setModalDetalle(null)} title="Detalle del despacho" size="xl">
+      <Modal isOpen={!!modalDetalle} onClose={() => { setModalDetalle(null); setVistaLineasDetalle('resumida'); setExpandidosGruposDetalle(new Set()) }} title="Detalle del despacho" size="xl">
         {detalle ? (
           <div className="space-y-5">
             <div className="grid grid-cols-2 gap-4 text-sm">
@@ -947,86 +949,186 @@ const Despachos = () => {
               {detalle.observaciones && <div className="col-span-2"><span className="text-gray-500 dark:text-gray-400">Observaciones:</span> <span className="font-medium text-gray-900 dark:text-white">{detalle.observaciones}</span></div>}
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Líneas</h3>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Líneas</h3>
+                <button
+                  type="button"
+                  onClick={() => setVistaLineasDetalle((v) => (v === 'resumida' ? 'ubicacion' : 'resumida'))}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-200 hover:bg-primary-100 dark:hover:bg-primary-900/30"
+                >
+                  {vistaLineasDetalle === 'resumida' ? <MapPin className="w-4 h-4" /> : <LayoutList className="w-4 h-4" />}
+                  {vistaLineasDetalle === 'resumida' ? 'Ver por ubicación' : 'Ver resumido por producto y lote'}
+                </button>
+              </div>
               <div className="mb-3 p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-600 flex flex-wrap gap-4 text-sm">
                 <span className="font-medium text-gray-700 dark:text-gray-300">Total bultos: <strong className="text-gray-900 dark:text-white">{detalle.estado === 'Despachado' && detalle.total_bultos_despacho != null ? detalle.total_bultos_despacho : totalesDetalle.bultos}</strong></span>
                 <span className="font-medium text-gray-700 dark:text-gray-300">Total adicional (kg): <strong className="text-gray-900 dark:text-white">{(detalle.estado === 'Despachado' && detalle.total_adicional_despacho != null ? detalle.total_adicional_despacho : totalesDetalle.adicional).toFixed(2)}</strong></span>
                 <span className="font-medium text-gray-700 dark:text-gray-300">Total kg a despachar: <strong className="text-gray-900 dark:text-white">{(detalle.estado === 'Despachado' && detalle.total_kg_despacho != null ? detalle.total_kg_despacho : totalesDetalle.total_kg).toFixed(2)}</strong></span>
               </div>
-              <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-600">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 dark:bg-gray-900/50">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Producto</th>
-                      <th className="px-3 py-2 text-left">Lote</th>
-                      <th className="px-3 py-2 text-right">Bultos</th>
-                      <th className="px-3 py-2 text-right">Peso adj. (kg)</th>
-                      <th className="px-3 py-2 text-right">Total (kg)</th>
-                      <th className="px-3 py-2 text-left">Ubicación</th>
-                      {detalle.estado === 'Registrado' && <th className="px-3 py-2 w-28">Acciones</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(detalle.lineas || []).map((l) => {
-                      const edit = lineasEdit[l.id]
-                      const bultosVal = edit ? edit.cantidad_bultos : l.cantidad_bultos
-                      const adicionalVal = edit != null ? edit.peso_adicional : (l.peso_adicional ?? 0)
-                      const totalKgMostrar = edit != null
-                        ? totalKgLineaDesdeEdit(l, bultosVal, adicionalVal)
-                        : (l.formato !== undefined && l.formato !== null
-                          ? totalKgLineaDesdeEdit(l, l.cantidad_bultos, l.peso_adicional ?? 0)
-                          : (Number(l.total_kg) || 0))
-                      return (
-                        <tr key={l.id}>
-                          <td className="px-3 py-2"><span className="font-medium text-gray-900 dark:text-white">{l.producto_codigo}</span>
-                          {l.producto_descripcion && <span className="text-gray-700 dark:text-gray-300"> - {l.producto_descripcion}</span>}</td>
-                          <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{l.lote || '-'}</td>
-                          <td className="px-3 py-2 text-right">
-                            {detalle.estado === 'Registrado' ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={maxBultosLinea(l)}
-                                value={bultosVal}
-                                onChange={(e) => setLineasEdit((prev) => ({ ...prev, [l.id]: { ...prev[l.id], cantidad_bultos: e.target.value, peso_adicional: prev[l.id]?.peso_adicional ?? adicionalVal } }))}
-                                className="w-16 px-1 py-0.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-right text-sm"
-                              />
-                            ) : (
-                              <span className="text-gray-900 dark:text-white">{l.cantidad_bultos}</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-right">
-                            {detalle.estado === 'Registrado' ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={maxAdicionalLinea(l)}
-                                step="0.01"
-                                value={adicionalVal}
-                                onChange={(e) => setLineasEdit((prev) => ({ ...prev, [l.id]: { ...prev[l.id], cantidad_bultos: prev[l.id]?.cantidad_bultos ?? bultosVal, peso_adicional: e.target.value } }))}
-                                className="w-20 px-1 py-0.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-right text-sm"
-                              />
-                            ) : (
-                              <span className="text-gray-700 dark:text-gray-300">{Number(l.peso_adicional || 0).toFixed(2)}</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-right font-medium text-gray-900 dark:text-white">{Number(totalKgMostrar).toFixed(2)}</td>
-                          <td className="px-3 py-2 text-gray-600 dark:text-gray-400 text-xs">{l.ubicacion}</td>
-                          {detalle.estado === 'Registrado' && (
-                            <td className="px-3 py-2">
-                              <button type="button" onClick={() => quitarLineaDetalle(l.id)} disabled={quitarLineaLoading === l.id} className="text-red-600 dark:text-red-400 hover:underline text-xs disabled:opacity-50">
-                                {quitarLineaLoading === l.id ? '...' : 'Quitar'}
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              {(detalle.lineas || []).length === 0 && (
+              {(detalle.lineas || []).length === 0 ? (
                 <p className="text-sm text-gray-500 dark:text-gray-400 py-3">Sin productos. Agregue desde Almacenes (vista posición/nivel) o con el botón inferior.</p>
+              ) : vistaLineasDetalle === 'resumida' ? (
+                (() => {
+                  const lineas = detalle.lineas || []
+                  const byKey = {}
+                  lineas.forEach((l) => {
+                    const key = `${l.producto_codigo || ''}|${l.lote ?? ''}`
+                    if (!byKey[key]) {
+                      byKey[key] = { codigo: l.producto_codigo, descripcion: l.producto_descripcion, lote: l.lote ?? '', lineas: [] }
+                    }
+                    byKey[key].lineas.push(l)
+                  })
+                  const grupos = Object.entries(byKey).map(([key, g]) => ({
+                    key,
+                    ...g,
+                    totalBultos: g.lineas.reduce((s, l) => s + (Number(lineasEdit[l.id]?.cantidad_bultos ?? l.cantidad_bultos) || 0), 0),
+                    totalAdicional: g.lineas.reduce((s, l) => s + (Number(lineasEdit[l.id]?.peso_adicional ?? l.peso_adicional) || 0), 0),
+                    totalKg: g.lineas.reduce((s, l) => {
+                      const edit = lineasEdit[l.id]
+                      const b = edit != null ? edit.cantidad_bultos : l.cantidad_bultos
+                      const a = edit != null ? edit.peso_adicional : (l.peso_adicional ?? 0)
+                      return s + (edit != null ? totalKgLineaDesdeEdit(l, b, a) : (Number(l.total_kg) || 0))
+                    }, 0),
+                  }))
+                  return (
+                    <div className="space-y-2">
+                      {grupos.map((gr) => {
+                        const expandido = expandidosGruposDetalle.has(gr.key)
+                        const toggle = () => setExpandidosGruposDetalle((prev) => { const n = new Set(prev); if (n.has(gr.key)) n.delete(gr.key); else n.add(gr.key); return n })
+                        return (
+                          <div key={gr.key} className="rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/50 overflow-hidden">
+                            <button type="button" onClick={toggle} className="w-full flex items-center justify-between gap-2 p-3 text-left hover:bg-gray-100 dark:hover:bg-gray-700/50">
+                              <span className="flex items-center gap-2 font-medium text-gray-900 dark:text-white">
+                                {expandido ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                {gr.codigo}{gr.descripcion ? ` — ${gr.descripcion}` : ''} {gr.lote ? `· Lote: ${gr.lote}` : ''}
+                              </span>
+                              <span className="text-sm text-gray-600 dark:text-gray-400">
+                                {gr.totalBultos} bultos · {gr.totalAdicional.toFixed(2)} kg adj. · {gr.totalKg.toFixed(2)} kg · {gr.lineas.length} ubicación{gr.lineas.length !== 1 ? 'es' : ''}
+                              </span>
+                            </button>
+                            {expandido && (
+                              <div className="border-t border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800">
+                                <table className="w-full text-sm">
+                                  <thead className="bg-gray-50 dark:bg-gray-900/50">
+                                    <tr>
+                                      <th className="px-3 py-1.5 text-left text-xs">Ubicación</th>
+                                      <th className="px-3 py-1.5 text-right text-xs">Bultos</th>
+                                      <th className="px-3 py-1.5 text-right text-xs">Peso adj.</th>
+                                      <th className="px-3 py-1.5 text-right text-xs">Total kg</th>
+                                      {detalle.estado === 'Registrado' && <th className="px-3 py-1.5 w-20 text-xs">Acciones</th>}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {gr.lineas.map((l) => {
+                                      const edit = lineasEdit[l.id]
+                                      const bultosVal = edit ? edit.cantidad_bultos : l.cantidad_bultos
+                                      const adicionalVal = edit != null ? edit.peso_adicional : (l.peso_adicional ?? 0)
+                                      const totalKgMostrar = edit != null ? totalKgLineaDesdeEdit(l, bultosVal, adicionalVal) : (Number(l.total_kg) || 0)
+                                      return (
+                                        <tr key={l.id} className="border-t border-gray-100 dark:border-gray-700">
+                                          <td className="px-3 py-1.5 text-gray-600 dark:text-gray-400 text-xs">{l.ubicacion}</td>
+                                          <td className="px-3 py-1.5 text-right">
+                                            {detalle.estado === 'Registrado' ? (
+                                              <input type="number" min={0} max={maxBultosLinea(l)} value={bultosVal} onChange={(e) => setLineasEdit((prev) => ({ ...prev, [l.id]: { ...prev[l.id], cantidad_bultos: e.target.value, peso_adicional: prev[l.id]?.peso_adicional ?? adicionalVal } }))} className="w-14 px-1 py-0.5 border rounded bg-white dark:bg-gray-700 text-right text-xs" />
+                                            ) : <span>{l.cantidad_bultos}</span>}
+                                          </td>
+                                          <td className="px-3 py-1.5 text-right">
+                                            {detalle.estado === 'Registrado' ? (
+                                              <input type="number" min={0} max={maxAdicionalLinea(l)} step="0.01" value={adicionalVal} onChange={(e) => setLineasEdit((prev) => ({ ...prev, [l.id]: { ...prev[l.id], cantidad_bultos: prev[l.id]?.cantidad_bultos ?? bultosVal, peso_adicional: e.target.value } }))} className="w-16 px-1 py-0.5 border rounded bg-white dark:bg-gray-700 text-right text-xs" />
+                                            ) : <span>{Number(l.peso_adicional || 0).toFixed(2)}</span>}
+                                          </td>
+                                          <td className="px-3 py-1.5 text-right font-medium">{Number(totalKgMostrar).toFixed(2)}</td>
+                                          {detalle.estado === 'Registrado' && (
+                                            <td className="px-3 py-1.5">
+                                              <button type="button" onClick={() => quitarLineaDetalle(l.id)} disabled={quitarLineaLoading === l.id} className="text-red-600 dark:text-red-400 hover:underline text-xs">Quitar</button>
+                                            </td>
+                                          )}
+                                        </tr>
+                                      )
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-600">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 dark:bg-gray-900/50">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Producto</th>
+                        <th className="px-3 py-2 text-left">Lote</th>
+                        <th className="px-3 py-2 text-right">Bultos</th>
+                        <th className="px-3 py-2 text-right">Peso adj. (kg)</th>
+                        <th className="px-3 py-2 text-right">Total (kg)</th>
+                        <th className="px-3 py-2 text-left">Ubicación</th>
+                        {detalle.estado === 'Registrado' && <th className="px-3 py-2 w-28">Acciones</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(detalle.lineas || []).map((l) => {
+                        const edit = lineasEdit[l.id]
+                        const bultosVal = edit ? edit.cantidad_bultos : l.cantidad_bultos
+                        const adicionalVal = edit != null ? edit.peso_adicional : (l.peso_adicional ?? 0)
+                        const totalKgMostrar = edit != null
+                          ? totalKgLineaDesdeEdit(l, bultosVal, adicionalVal)
+                          : (l.formato !== undefined && l.formato !== null
+                            ? totalKgLineaDesdeEdit(l, l.cantidad_bultos, l.peso_adicional ?? 0)
+                            : (Number(l.total_kg) || 0))
+                        return (
+                          <tr key={l.id}>
+                            <td className="px-3 py-2"><span className="font-medium text-gray-900 dark:text-white">{l.producto_codigo}</span>
+                            {l.producto_descripcion && <span className="text-gray-700 dark:text-gray-300"> - {l.producto_descripcion}</span>}</td>
+                            <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{l.lote || '-'}</td>
+                            <td className="px-3 py-2 text-right">
+                              {detalle.estado === 'Registrado' ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={maxBultosLinea(l)}
+                                  value={bultosVal}
+                                  onChange={(e) => setLineasEdit((prev) => ({ ...prev, [l.id]: { ...prev[l.id], cantidad_bultos: e.target.value, peso_adicional: prev[l.id]?.peso_adicional ?? adicionalVal } }))}
+                                  className="w-16 px-1 py-0.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-right text-sm"
+                                />
+                              ) : (
+                                <span className="text-gray-900 dark:text-white">{l.cantidad_bultos}</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {detalle.estado === 'Registrado' ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={maxAdicionalLinea(l)}
+                                  step="0.01"
+                                  value={adicionalVal}
+                                  onChange={(e) => setLineasEdit((prev) => ({ ...prev, [l.id]: { ...prev[l.id], cantidad_bultos: prev[l.id]?.cantidad_bultos ?? bultosVal, peso_adicional: e.target.value } }))}
+                                  className="w-20 px-1 py-0.5 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-right text-sm"
+                                />
+                              ) : (
+                                <span className="text-gray-700 dark:text-gray-300">{Number(l.peso_adicional || 0).toFixed(2)}</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right font-medium text-gray-900 dark:text-white">{Number(totalKgMostrar).toFixed(2)}</td>
+                            <td className="px-3 py-2 text-gray-600 dark:text-gray-400 text-xs">{l.ubicacion}</td>
+                            {detalle.estado === 'Registrado' && (
+                              <td className="px-3 py-2">
+                                <button type="button" onClick={() => quitarLineaDetalle(l.id)} disabled={quitarLineaLoading === l.id} className="text-red-600 dark:text-red-400 hover:underline text-xs disabled:opacity-50">
+                                  {quitarLineaLoading === l.id ? '...' : 'Quitar'}
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
             {detalle.estado === 'Registrado' && (
