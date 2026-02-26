@@ -10,6 +10,25 @@ import { especiesApi } from '../../api/especies'
 import { useConfig } from '../../contexts/ConfigContext'
 import toast from 'react-hot-toast'
 
+const CAMPOS_POR_TIPO_SALIDA = {
+  Embarque: ['orden_produccion', 'cliente_destino', 'pais_destino', 'contenedor', 'guia_salida', 'observaciones'],
+  'Venta Local': ['destino', 'contenedor', 'guia_salida', 'observaciones'],
+  Reempaque: ['guia_salida', 'observaciones'],
+  Reproceso: ['guia_salida', 'observaciones'],
+  Etiquetado: ['guia_salida', 'observaciones'],
+  Muestreo: ['guia_salida', 'observaciones'],
+  Otros: ['guia_salida', 'observaciones'],
+}
+const ETIQUETAS_SALIDA = {
+  orden_produccion: 'Orden de producción',
+  cliente_destino: 'Cliente destino',
+  pais_destino: 'País de destino',
+  contenedor: 'Contenedor',
+  destino: 'Destino',
+  guia_salida: 'Guía salida',
+  observaciones: 'Observaciones',
+}
+
 const Salidas = () => {
   const { registrosPorPagina } = useConfig()
   const [loading, setLoading] = useState(true)
@@ -299,14 +318,20 @@ const Salidas = () => {
         ) : detalle ? (
           <div className="space-y-6 overflow-y-auto max-h-[70vh] text-gray-900 dark:text-white">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-lg text-sm">
-              <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Guía salida</span>{detalle.guia_salida || '-'}</div>
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Fecha</span>{formatFecha(detalle.fecha_salida)}</div>
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Tipo</span>{detalle.tipo_salida}</div>
+              <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Guía salida</span>{detalle.guia_salida || '-'}</div>
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Cliente origen</span>{detalle.cliente_origen_nombre || '-'}</div>
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Cliente destino</span>{detalle.cliente_destino || '-'}</div>
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Usuario</span>{detalle.usuario_nombre}</div>
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Estado</span>{detalle.estado}</div>
               <div><span className="text-gray-500 dark:text-gray-400 block text-xs">Saldo (peso adj.)</span>{(Number(detalle.total_adicional_despacho) || 0).toFixed(2)} kg</div>
+              {(CAMPOS_POR_TIPO_SALIDA[detalle.tipo_salida] || []).filter((c) => c !== 'guia_salida' && c !== 'cliente_destino').map((campo) => (
+                <div key={campo} className={campo === 'observaciones' ? 'col-span-2 md:col-span-4' : ''}>
+                  <span className="text-gray-500 dark:text-gray-400 block text-xs">{ETIQUETAS_SALIDA[campo] ?? campo}</span>
+                  <span className="text-gray-900 dark:text-white">{detalle[campo] ?? '-'}</span>
+                </div>
+              ))}
             </div>
             <div>
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3">

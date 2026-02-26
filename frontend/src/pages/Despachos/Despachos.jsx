@@ -712,14 +712,24 @@ const Despachos = () => {
                     <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{d.cliente_destino || '-'}</td>
                     <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{d.especie_nombre}</td>
                     <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300 max-w-[220px]">
-                      {(d.productos || []).map((p, i) => (
-                        <div key={i} className="text-xs text-gray-900 dark:text-white">
-                          <span className="font-medium">{p.codigo}</span>
-                          {p.descripcion ? ` - ${p.descripcion.slice(0, 40)}${p.descripcion.length > 40 ? '...' : ''}` : ''}
-                          {p.lote ? ` (Lote: ${p.lote})` : ''}
-                        </div>
-                      ))}
-                      {(!d.productos || d.productos.length === 0) && '-'}
+                      {(() => {
+                        const prods = d.productos || []
+                        const byKey = {}
+                        prods.forEach((p) => {
+                          const key = `${p.codigo || ''}|${p.lote ?? ''}`
+                          if (!byKey[key]) byKey[key] = { codigo: p.codigo, descripcion: p.descripcion, lote: p.lote ?? '', count: 0 }
+                          byKey[key].count += 1
+                        })
+                        const grupos = Object.values(byKey)
+                        return grupos.length === 0 ? '-' : grupos.map((g, i) => (
+                          <div key={i} className="text-xs text-gray-900 dark:text-white">
+                            <span className="font-medium">{g.codigo}</span>
+                            {g.descripcion ? ` - ${g.descripcion.slice(0, 40)}${g.descripcion.length > 40 ? '...' : ''}` : ''}
+                            {g.lote ? ` (Lote: ${g.lote})` : ''}
+                            {g.count > 1 ? <span className="text-gray-500 dark:text-gray-400"> · {g.count} ubic.</span> : null}
+                          </div>
+                        ))
+                      })()}
                     </td>
                     <td className="px-4 py-3 text-right font-medium text-gray-900 dark:text-white">{d.total_bultos}</td>
                     <td className="px-4 py-3 text-right font-medium text-gray-900 dark:text-white">{Number(d.total_kg).toFixed(2)}</td>
@@ -944,9 +954,13 @@ const Despachos = () => {
               <div><span className="text-gray-500 dark:text-gray-400">Tipo:</span> <span className="font-medium text-gray-900 dark:text-white">{detalle.tipo_salida}</span></div>
               <div><span className="text-gray-500 dark:text-gray-400">Referencia:</span> <span className="font-medium text-gray-900 dark:text-white">{detalle.guia_salida || '-'}</span></div>
               <div><span className="text-gray-500 dark:text-gray-400">Estado:</span> <span className="font-medium text-gray-900 dark:text-white">{detalle.estado}</span></div>
-              <div><span className="text-gray-500 dark:text-gray-400">Cliente destino:</span> <span className="font-medium text-gray-900 dark:text-white">{detalle.cliente_destino || '-'}</span></div>
               <div><span className="text-gray-500 dark:text-gray-400">Usuario:</span> <span className="font-medium text-gray-900 dark:text-white">{detalle.usuario_nombre}</span></div>
-              {detalle.observaciones && <div className="col-span-2"><span className="text-gray-500 dark:text-gray-400">Observaciones:</span> <span className="font-medium text-gray-900 dark:text-white">{detalle.observaciones}</span></div>}
+              {(CAMPOS_POR_TIPO[detalle.tipo_salida] || []).filter((c) => !['cliente_origen_id', 'fecha_salida', 'guia_salida'].includes(c)).map((campo) => (
+                <div key={campo} className={campo === 'observaciones' ? 'col-span-2' : ''}>
+                  <span className="text-gray-500 dark:text-gray-400">{ETIQUETAS[campo] ?? campo}:</span>{' '}
+                  <span className="font-medium text-gray-900 dark:text-white">{detalle[campo] ?? '-'}</span>
+                </div>
+              ))}
             </div>
             <div>
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
