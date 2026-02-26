@@ -708,7 +708,14 @@ const Despachos = () => {
                 lista.map((d) => (
                   <tr key={d.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                     <td className="px-4 py-3 text-sm text-gray-900 dark:text-white">{formatFecha(d.fecha_salida)}</td>
-                    <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{d.referencia_salida}</td>
+                    <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="font-medium text-gray-900 dark:text-white">{d.tipo_salida || ''} {d.referencia_salida}</span>
+                        <span className="text-xs text-gray-600 dark:text-gray-400">
+                          {[d.cliente_destino, d.pais_destino].filter(Boolean).join(' · ') || '-'}
+                        </span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{d.cliente_destino || '-'}</td>
                     <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{d.especie_nombre}</td>
                     <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300 max-w-[220px]">

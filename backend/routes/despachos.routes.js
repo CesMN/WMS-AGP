@@ -69,7 +69,7 @@ router.get('/', async (req, res) => {
     const total = parseInt(countResult.rows[0]?.total, 10) || 0;
 
     const query = `
-      SELECT d.id, d.movimiento_id, d.tipo_salida, d.fecha_salida, d.guia_salida, d.cliente_destino, d.cliente_origen_id, d.estado, d.usuario_id, d.created_at,
+      SELECT d.id, d.movimiento_id, d.tipo_salida, d.fecha_salida, d.guia_salida, d.cliente_destino, d.pais_destino, d.cliente_origen_id, d.estado, d.usuario_id, d.created_at,
              u.nombre AS usuario_nombre,
              c_origen.nombre AS cliente_origen_nombre
       FROM despachos d
