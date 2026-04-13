@@ -114,9 +114,15 @@ const Ingresos = () => {
       setDetalleGrupo((prev) => (prev ? { ...prev, numero_guia: guiaMostrar } : prev))
       setLista((prev) =>
         prev.map((g) => {
-          if (!g.movimiento_ids || !detalleGrupo.movimiento_ids || g.movimiento_ids.length !== detalleGrupo.movimiento_ids.length) return g
-          const mismoGrupo = g.movimiento_ids.every((id, i) => id === detalleGrupo.movimiento_ids[i])
-          return mismoGrupo ? { ...g, numero_guia: guiaMostrar } : g
+          const mismoGrupo =
+            (g.grupo_id != null && detalleGrupo.grupo_id != null && g.grupo_id === detalleGrupo.grupo_id) ||
+            (g.movimiento_ids?.length &&
+              detalleGrupo.movimiento_ids?.length &&
+              g.movimiento_ids.length === detalleGrupo.movimiento_ids.length &&
+              g.movimiento_ids.every((id, i) => id === detalleGrupo.movimiento_ids[i]))
+          if (!mismoGrupo) return g
+          const nuevoGrupoId = nuevoValor || '__WMS_SIN_NUMERO_GUIA__'
+          return { ...g, numero_guia: guiaMostrar, grupo_id: nuevoValor ? nuevoValor : nuevoGrupoId }
         })
       )
       toast.success('Número de guía actualizado. El cambio se refleja en ingresos, historial de movimientos y vista posición.')
@@ -143,15 +149,16 @@ const Ingresos = () => {
   }
 
   return (
-    <div>
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-3">
-          <ArrowDownToLine className="w-8 h-8 text-primary-600" />
-          <div>
+    <div className="min-w-0 max-w-full">
+      <div className="flex flex-col gap-4 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between mb-5 sm:mb-6">
+        <div className="flex items-start gap-3 min-w-0">
+          <ArrowDownToLine className="w-7 h-7 sm:w-8 sm:h-8 text-primary-600 shrink-0" />
+          <div className="min-w-0">
             <p className="text-sm text-gray-500 dark:text-gray-400">Por guía de ingreso</p>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Ingresos</h1>
+            <h1 className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white leading-tight">Ingresos</h1>
           </div>
         </div>
+        <div className="w-full lg:w-auto shrink-0">
         <ExportDropdown
           getExportConfig={() => ({
             title: 'Ingresos',
@@ -210,6 +217,7 @@ const Ingresos = () => {
             },
           })}
         />
+        </div>
       </div>
 
       {sinColumnaGuia && (
@@ -218,46 +226,46 @@ const Ingresos = () => {
         </div>
       )}
 
-      <div className="mb-6 p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+      <div className="mb-6 p-3 sm:p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
           <Search className="w-4 h-4" />
           Filtros
         </h2>
-        <div className="flex flex-wrap items-end gap-3">
-          <div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 items-end">
+          <div className="min-w-0">
             <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Nº guía</label>
             <input
               type="text"
               value={filtroNumeroGuia}
               onChange={(e) => aplicarFiltro(setFiltroNumeroGuia, e.target.value)}
               placeholder="Buscar por guía"
-              className="w-40 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
             />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Fecha desde</label>
             <input
               type="date"
               value={filtroFechaDesde}
               onChange={(e) => aplicarFiltro(setFiltroFechaDesde, e.target.value)}
-              className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
             />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Fecha hasta</label>
             <input
               type="date"
               value={filtroFechaHasta}
               onChange={(e) => aplicarFiltro(setFiltroFechaHasta, e.target.value)}
-              className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
             />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Cliente</label>
             <select
               value={filtroClienteId}
               onChange={(e) => aplicarFiltro(setFiltroClienteId, e.target.value)}
-              className="min-w-[180px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
+              className="w-full min-h-[44px] min-w-0 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
             >
               <option value="">Todos</option>
               {clientes.map((c) => (
@@ -265,12 +273,12 @@ const Ingresos = () => {
               ))}
             </select>
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Especie</label>
             <select
               value={filtroEspecieId}
               onChange={(e) => aplicarFiltro(setFiltroEspecieId, e.target.value)}
-              className="min-w-[140px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
+              className="w-full min-h-[44px] min-w-0 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500"
             >
               <option value="">Todas</option>
               {especies.map((e) => (
@@ -281,7 +289,7 @@ const Ingresos = () => {
           <button
             type="button"
             onClick={limpiarFiltros}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600"
+            className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 py-2 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 sm:col-span-2 lg:col-span-1"
           >
             <X className="w-4 h-4" />
             Limpiar
@@ -494,8 +502,8 @@ const Ingresos = () => {
                   )
                 }
                 return (
-                  <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-600">
-                    <table className="w-full text-sm">
+                  <div className="wms-table-scroll rounded-lg border border-gray-200 dark:border-gray-600">
+                    <table className="min-w-[40rem] w-full text-sm">
                       <thead className="bg-gray-50 dark:bg-gray-900/50">
                         <tr>
                           <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Producto</th>

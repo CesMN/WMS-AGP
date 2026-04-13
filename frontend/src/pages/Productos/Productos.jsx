@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
-import { Box, Plus, Edit, Trash2, Loader2, Search, Upload, FileSpreadsheet } from 'lucide-react'
+import { Box, Plus, Edit, Trash2, Loader2, Search, Upload, FileSpreadsheet, X } from 'lucide-react'
 import Modal from '../../components/Modal'
 import PaginationBar from '../../components/PaginationBar'
 import ExportDropdown from '../../components/ExportDropdown'
 import { productosApi } from '../../api/productos'
+import { insumosApi } from '../../api/insumos'
 import { clientesApi } from '../../api/clientes'
 import { especiesApi } from '../../api/especies'
 import { useConfig } from '../../contexts/ConfigContext'
@@ -35,6 +36,9 @@ const Productos = () => {
     presentacion: '',
     formato: '',
     unidad_medida: 'KG',
+    capacidad_parihuela_bultos: '',
+    capacidad_parihuela_cajas: '',
+    unidad_parihuela: 'BULTOS',
   })
   const [errors, setErrors] = useState({})
   const [modalImportOpen, setModalImportOpen] = useState(false)
@@ -45,10 +49,20 @@ const Productos = () => {
   const fileInputImportRef = useRef(null)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [eliminandoVarios, setEliminandoVarios] = useState(false)
+  const [insumosLines, setInsumosLines] = useState([])
+  const [insumosOpciones, setInsumosOpciones] = useState([])
 
   useEffect(() => {
     cargaClientesYEspecies()
   }, [])
+
+  useEffect(() => {
+    if (!modalOpen) return
+    insumosApi
+      .listar({ limit: 500 })
+      .then(({ data }) => setInsumosOpciones(data?.data ?? []))
+      .catch(() => setInsumosOpciones([]))
+  }, [modalOpen])
 
   useEffect(() => {
     setOffset(0)
@@ -100,6 +114,7 @@ const Productos = () => {
 
   const openCrear = () => {
     setEditando(null)
+    setInsumosLines([])
     const primerCliente = clientes[0]
     const especiesDelPrimero = primerCliente?.especies || []
     setFormData({
@@ -111,6 +126,9 @@ const Productos = () => {
       presentacion: '',
       formato: '',
       unidad_medida: 'KG',
+      capacidad_parihuela_bultos: '',
+      capacidad_parihuela_cajas: '',
+      unidad_parihuela: 'BULTOS',
     })
     setErrors({})
     setModalOpen(true)
@@ -118,6 +136,18 @@ const Productos = () => {
 
   const openEditar = (p) => {
     setEditando(p)
+    setInsumosLines([])
+    productosApi
+      .insumosProducto(p.id)
+      .then(({ data }) => {
+        setInsumosLines(
+          (data?.items || []).map((i) => ({
+            insumo_id: i.insumo_id,
+            cantidad_por_bulto: String(i.cantidad_por_bulto ?? i.cantidad_por_kg_producto ?? ''),
+          }))
+        )
+      })
+      .catch(() => setInsumosLines([]))
     setFormData({
       codigo: p.codigo,
       cliente_id: p.cliente_id,
@@ -127,6 +157,9 @@ const Productos = () => {
       presentacion: p.presentacion || '',
       formato: p.formato,
       unidad_medida: p.unidad_medida,
+      capacidad_parihuela_bultos: p.capacidad_parihuela_bultos ?? '',
+      capacidad_parihuela_cajas: p.capacidad_parihuela_cajas ?? '',
+      unidad_parihuela: p.unidad_parihuela || 'BULTOS',
     })
     setErrors({})
     setModalOpen(true)
@@ -181,13 +214,29 @@ const Productos = () => {
         presentacion: formData.presentacion.trim() || null,
         formato: Number(formData.formato),
         unidad_medida: formData.unidad_medida,
+        capacidad_parihuela_bultos: formData.capacidad_parihuela_bultos !== '' ? Number(formData.capacidad_parihuela_bultos) : null,
+        capacidad_parihuela_cajas: formData.capacidad_parihuela_cajas !== '' ? Number(formData.capacidad_parihuela_cajas) : null,
+        unidad_parihuela: formData.unidad_parihuela || 'BULTOS',
       }
+      let productId = editando?.id
       if (editando) {
         await productosApi.actualizar(editando.id, payload)
         toast.success('Producto actualizado')
+        productId = editando.id
       } else {
-        await productosApi.crear(payload)
+        const { data } = await productosApi.crear(payload)
         toast.success('Producto creado')
+        productId = data?.id
+      }
+      const items = insumosLines
+        .filter((r) => r.insumo_id && r.cantidad_por_bulto !== '' && !Number.isNaN(Number(r.cantidad_por_bulto)))
+        .map((r) => ({ insumo_id: r.insumo_id, cantidad_por_bulto: Number(r.cantidad_por_bulto) }))
+      if (productId) {
+        try {
+          await productosApi.guardarInsumosProducto(productId, { items })
+        } catch (insErr) {
+          toast.error(insErr.response?.data?.message || 'No se pudieron guardar los insumos del producto (ejecute migración 008 si falta la tabla).')
+        }
       }
       setModalOpen(false)
       refreshLista()
@@ -525,7 +574,7 @@ const Productos = () => {
         </div>
       </Modal>
 
-      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={editando ? 'Editar producto' : 'Agregar producto'} size="lg">
+      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={editando ? 'Editar producto' : 'Agregar producto'} size="xl">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -585,6 +634,100 @@ const Productos = () => {
               </select>
               {errors.unidad_medida && <p className="mt-1 text-sm text-red-600">{errors.unidad_medida}</p>}
             </div>
+          </div>
+          <div className="border-t border-gray-200 dark:border-gray-600 pt-3 mt-3">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Capacidad parihuela (recepción en cámara)</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-0.5">Cap. bultos</label>
+                <input name="capacidad_parihuela_bultos" type="number" min="0" step="1" value={formData.capacidad_parihuela_bultos} onChange={handleChange} placeholder="Ej. 50" className="w-full px-3 py-2 border border-gray-300 dark:bg-gray-700 dark:border-gray-600 dark:text-white rounded-lg" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-0.5">Cap. cajas</label>
+                <input name="capacidad_parihuela_cajas" type="number" min="0" step="1" value={formData.capacidad_parihuela_cajas} onChange={handleChange} placeholder="Ej. 128" className="w-full px-3 py-2 border border-gray-300 dark:bg-gray-700 dark:border-gray-600 dark:text-white rounded-lg" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-0.5">Unidad parihuela</label>
+                <select name="unidad_parihuela" value={formData.unidad_parihuela} onChange={handleChange} className="w-full px-3 py-2 border border-gray-300 dark:bg-gray-700 dark:border-gray-600 dark:text-white rounded-lg">
+                  <option value="BULTOS">Bultos</option>
+                  <option value="CAJAS">Cajas</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div className="border-t border-gray-200 dark:border-gray-600 pt-4 mt-2">
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-100 mb-1">Insumos extra por producto (opcional)</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              El empaque principal ahora se controla por <strong>plantillas de especie</strong> en <strong>Insumos &gt; Plantillas de empaque</strong>.
+              Esta sección queda para consumos adicionales específicos de este producto.
+            </p>
+            <div className="space-y-2 max-h-48 overflow-y-auto">
+              {insumosLines.map((row, idx) => {
+                const insumoSel = insumosOpciones.find((x) => x.id === row.insumo_id)
+                const uMed = insumoSel?.unidad_medida || ''
+                const etiquetaCantidad =
+                  uMed === 'KG' ? 'Kg / bulto' : uMed === 'LB' ? 'Lb / bulto' : uMed === 'L' ? 'L / bulto' : 'Unid. / bulto'
+                return (
+                <div key={idx} className="flex flex-wrap gap-2 items-end">
+                  <div className="flex-1 min-w-[180px]">
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-0.5">Insumo</label>
+                    <select
+                      value={row.insumo_id}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        const op = insumosOpciones.find((i) => i.id === v)
+                        setInsumosLines((lines) =>
+                          lines.map((l, i) => {
+                            if (i !== idx) return l
+                            const next = { ...l, insumo_id: v }
+                            if (v && op?.unidad_medida === 'UN' && (l.cantidad_por_bulto === '' || l.cantidad_por_bulto == null)) {
+                              next.cantidad_por_bulto = '1'
+                            }
+                            return next
+                          })
+                        )
+                      }}
+                      className="w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-lg"
+                    >
+                      <option value="">Seleccione...</option>
+                      {insumosOpciones.map((i) => (
+                        <option key={i.id} value={i.id}>{i.nombre} ({i.unidad_medida})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="w-36">
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-0.5">{etiquetaCantidad}</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={row.cantidad_por_bulto}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setInsumosLines((lines) => lines.map((l, i) => (i === idx ? { ...l, cantidad_por_bulto: v } : l)))
+                      }}
+                      className="w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-lg"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setInsumosLines((lines) => lines.filter((_, i) => i !== idx))}
+                    className="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg mb-0.5"
+                    title="Quitar"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                )
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => setInsumosLines((lines) => [...lines, { insumo_id: '', cantidad_por_bulto: '' }])}
+              className="mt-2 text-sm text-primary-600 dark:text-primary-400 font-medium flex items-center gap-1"
+            >
+              <Plus className="w-4 h-4" /> Añadir insumo
+            </button>
           </div>
           <div className="flex gap-3 pt-4">
             <button type="button" onClick={() => setModalOpen(false)} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">

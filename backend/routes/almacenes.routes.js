@@ -366,11 +366,21 @@ router.get('/:almacenId/carriles/:carrilId/niveles-posiciones', async (req, res)
                 p.numero_posicion, 
                 p.estado,
                 COALESCE(p.bloqueada, false) AS bloqueada,
-                COALESCE(SUM(s.cantidad_bultos), 0)::INTEGER AS total_bultos,
+                COALESCE(SUM(s.cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
                 COALESCE(SUM(s.peso_adicional), 0)::NUMERIC(10,2) AS total_peso_adicional,
                 COALESCE(SUM(CASE WHEN COALESCE(s.total_kg, 0) > 0 THEN s.total_kg ELSE COALESCE(s.total_kg, 0) + COALESCE(s.peso_adicional, 0) END), 0)::NUMERIC(10,2) AS total_kg,
                 COUNT(DISTINCT s.producto_id) AS productos_distintos,
-                COUNT(DISTINCT (s.producto_id::text || '-' || COALESCE(s.lote, ''))) AS productos_lotes_distintos
+                COUNT(DISTINCT (s.producto_id::text || '-' || COALESCE(s.lote, ''))) AS productos_lotes_distintos,
+                COALESCE(array_remove(array_agg(DISTINCT s.id), NULL), ARRAY[]::uuid[]) AS stock_posicion_ids,
+                COALESCE(
+                  json_agg(
+                    json_build_object(
+                      'id', s.id,
+                      'cantidad_bultos', COALESCE(s.cantidad_bultos, 0)::numeric
+                    )
+                  ) FILTER (WHERE s.id IS NOT NULL),
+                  '[]'::json
+                ) AS stock_items
          FROM posiciones p
          LEFT JOIN stock_posiciones s ON s.posicion_id = p.id AND (s.cantidad_bultos > 0 OR s.total_kg > 0 OR COALESCE(s.peso_adicional, 0) > 0)
          WHERE p.nivel_id = $1
@@ -439,6 +449,8 @@ router.get('/:almacenId/carriles/:carrilId/niveles-posiciones', async (req, res)
             bloqueada: Boolean(p.bloqueada),
             total_bultos: Number(p.total_bultos) || 0,
             total_peso_adicional: Number(p.total_peso_adicional) || 0,
+            stock_posicion_ids: Array.isArray(p.stock_posicion_ids) ? p.stock_posicion_ids.filter(Boolean) : [],
+            stock_items: Array.isArray(p.stock_items) ? p.stock_items : [],
             total_kg: Number(p.total_kg) || 0,
             producto_codigo,
             producto_nombre,

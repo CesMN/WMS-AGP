@@ -13,4 +13,7 @@ export const productosApi = {
     return axios.post('/api/productos/import', form, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
   importarConfirmar: (rows) => axios.post('/api/productos/import/confirm', { rows }),
+
+  insumosProducto: (id) => axios.get(`/api/productos/${id}/insumos`),
+  guardarInsumosProducto: (id, body) => axios.put(`/api/productos/${id}/insumos`, body),
 }

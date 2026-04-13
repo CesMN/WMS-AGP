@@ -1,11 +1,16 @@
 import { useState, useEffect } from 'react'
-import { Fish, Plus, Edit, Trash2, Loader2 } from 'lucide-react'
+import { Fish, Plus, Edit, Trash2, Loader2, Layers } from 'lucide-react'
 import Modal from '../../components/Modal'
 import PaginationBar from '../../components/PaginationBar'
 import ExportDropdown from '../../components/ExportDropdown'
 import { especiesApi } from '../../api/especies'
 import { useConfig } from '../../contexts/ConfigContext'
 import toast from 'react-hot-toast'
+
+const TIPO_DESCARGA_OPTIONS = [
+  { value: 'normal', label: 'Descarga normal' },
+  { value: 'clasificacion', label: 'Descarga por clasificación' },
+]
 
 const Especies = () => {
   const { registrosPorPagina } = useConfig()
@@ -17,8 +22,12 @@ const Especies = () => {
   const [modalOpen, setModalOpen] = useState(false)
   const [editando, setEditando] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [formData, setFormData] = useState({ nombre: '', observaciones: '' })
+  const [formData, setFormData] = useState({ nombre: '', observaciones: '', tipo_descarga: 'normal' })
   const [errors, setErrors] = useState({})
+  const [clasificaciones, setClasificaciones] = useState([])
+  const [loadingClasif, setLoadingClasif] = useState(false)
+  const [clasifForm, setClasifForm] = useState({ codigo: '', nombre: '', orden: 0 })
+  const [editandoClasif, setEditandoClasif] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -48,16 +57,71 @@ const Especies = () => {
 
   const openCrear = () => {
     setEditando(null)
-    setFormData({ nombre: '', observaciones: '' })
+    setFormData({ nombre: '', observaciones: '', tipo_descarga: 'normal' })
+    setClasificaciones([])
+    setClasifForm({ codigo: '', nombre: '', orden: 0 })
+    setEditandoClasif(null)
     setErrors({})
     setModalOpen(true)
   }
 
   const openEditar = (e) => {
     setEditando(e)
-    setFormData({ nombre: e.nombre, observaciones: e.observaciones || '' })
+    setFormData({
+      nombre: e.nombre,
+      observaciones: e.observaciones || '',
+      tipo_descarga: e.tipo_descarga === 'clasificacion' ? 'clasificacion' : 'normal',
+    })
+    setEditandoClasif(null)
+    setClasifForm({ codigo: '', nombre: '', orden: 0 })
     setErrors({})
     setModalOpen(true)
+    if (e.id && e.tipo_descarga === 'clasificacion') {
+      setLoadingClasif(true)
+      especiesApi
+        .clasificacionesListar(e.id)
+        .then(({ data }) => setClasificaciones(Array.isArray(data) ? data : []))
+        .catch(() => setClasificaciones([]))
+        .finally(() => setLoadingClasif(false))
+    } else {
+      setClasificaciones([])
+    }
+  }
+
+  const agregarClasificacion = async () => {
+    if (!editando?.id || !clasifForm.codigo?.trim()) return
+    try {
+      const { data } = await especiesApi.clasificacionCrear(editando.id, clasifForm)
+      setClasificaciones((prev) => [...prev, data].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0)))
+      setClasifForm({ codigo: '', nombre: '', orden: clasificaciones.length })
+      toast.success('Clasificación agregada')
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al agregar')
+    }
+  }
+
+  const actualizarClasificacion = async () => {
+    if (!editandoClasif?.id) return
+    try {
+      const { data } = await especiesApi.clasificacionActualizar(editandoClasif.id, clasifForm)
+      setClasificaciones((prev) => prev.map((c) => (c.id === data.id ? data : c)))
+      setEditandoClasif(null)
+      setClasifForm({ codigo: '', nombre: '', orden: 0 })
+      toast.success('Clasificación actualizada')
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al actualizar')
+    }
+  }
+
+  const eliminarClasificacion = async (c) => {
+    if (!window.confirm(`¿Eliminar clasificación "${c.codigo}"?`)) return
+    try {
+      await especiesApi.clasificacionEliminar(c.id)
+      setClasificaciones((prev) => prev.filter((x) => x.id !== c.id))
+      toast.success('Clasificación eliminada')
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al eliminar')
+    }
   }
 
   const handleChange = (e) => {
@@ -162,6 +226,12 @@ const Especies = () => {
               </div>
             </div>
             <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-3 flex-1">{item.observaciones || 'Sin observaciones'}</p>
+            <div className="mt-2">
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${item.tipo_descarga === 'clasificacion' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}`}>
+                <Layers className="w-3 h-3" />
+                {item.tipo_descarga === 'clasificacion' ? 'Por clasificación' : 'Normal'}
+              </span>
+            </div>
           </div>
         ))}
       </div>
@@ -183,6 +253,56 @@ const Especies = () => {
             <input name="nombre" value={formData.nombre} onChange={handleChange} className={`w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white ${errors.nombre ? 'border-red-500' : 'border-gray-300'}`} />
             {errors.nombre && <p className="mt-1 text-sm text-red-600">{errors.nombre}</p>}
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Tipo de descarga</label>
+            <div className="flex flex-wrap gap-4">
+              {TIPO_DESCARGA_OPTIONS.map((opt) => (
+                <label key={opt.value} className="inline-flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="tipo_descarga" value={opt.value} checked={formData.tipo_descarga === opt.value} onChange={handleChange} className="rounded border-gray-300 text-primary-600" />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">{opt.label}</span>
+                </label>
+              ))}
+            </div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Normal: modelo estándar. Por clasificación: se registran pesos por código (ej. 2-4 kg, 4-10 kg).</p>
+          </div>
+          {formData.tipo_descarga === 'clasificacion' && (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-600 p-3 bg-gray-50 dark:bg-gray-800/50">
+              <h4 className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-2">Códigos de clasificación</h4>
+              {!editando ? (
+                <p className="text-xs text-gray-500 dark:text-gray-400">Guarde la especie primero para agregar códigos de clasificación (ej. 2-4 kg, 4-10 kg).</p>
+              ) : (
+                <>
+                  {loadingClasif ? (
+                    <div className="flex items-center justify-center py-4"><Loader2 className="w-5 h-5 animate-spin text-primary-600" /></div>
+                  ) : (
+                    <>
+                      <ul className="space-y-2 mb-3 max-h-40 overflow-y-auto">
+                        {clasificaciones.map((c) => (
+                          <li key={c.id} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded bg-white dark:bg-gray-700 text-sm">
+                            <span className="text-gray-800 dark:text-gray-200">{c.codigo}{c.nombre ? ` — ${c.nombre}` : ''}</span>
+                            <span className="inline-flex gap-1">
+                              <button type="button" onClick={() => { setEditandoClasif(c); setClasifForm({ codigo: c.codigo, nombre: c.nombre || '', orden: c.orden ?? 0 }) }} className="p-1 text-gray-500 hover:text-primary-600 rounded" title="Editar"> <Edit className="w-3.5 h-3.5" /> </button>
+                              <button type="button" onClick={() => eliminarClasificacion(c)} className="p-1 text-gray-500 hover:text-red-600 rounded" title="Eliminar"> <Trash2 className="w-3.5 h-3.5" /> </button>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="flex flex-wrap gap-2 items-end">
+                        <input placeholder="Código (ej. 2-4 kg)" value={clasifForm.codigo} onChange={(e) => setClasifForm((p) => ({ ...p, codigo: e.target.value }))} className="flex-1 min-w-[100px] px-2 py-1.5 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded text-sm" />
+                        <input placeholder="Nombre (opcional)" value={clasifForm.nombre} onChange={(e) => setClasifForm((p) => ({ ...p, nombre: e.target.value }))} className="flex-1 min-w-[100px] px-2 py-1.5 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded text-sm" />
+                        <input type="number" placeholder="Orden" value={clasifForm.orden} onChange={(e) => setClasifForm((p) => ({ ...p, orden: parseInt(e.target.value, 10) || 0 }))} className="w-16 px-2 py-1.5 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded text-sm" />
+                        {editandoClasif ? (
+                          <><button type="button" onClick={actualizarClasificacion} className="px-3 py-1.5 bg-primary-600 text-white rounded text-sm">Guardar</button><button type="button" onClick={() => { setEditandoClasif(null); setClasifForm({ codigo: '', nombre: '', orden: 0 }) }} className="px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded text-sm">Cancelar</button></>
+                        ) : (
+                          <button type="button" onClick={agregarClasificacion} className="px-3 py-1.5 bg-primary-600 text-white rounded text-sm">Agregar</button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Observaciones</label>
             <textarea name="observaciones" value={formData.observaciones} onChange={handleChange} rows={3} className="w-full px-3 py-2 border border-gray-300 dark:bg-gray-700 dark:border-gray-600 dark:text-white rounded-lg" />

@@ -100,15 +100,17 @@ const Almacenes = () => {
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <Warehouse className="w-8 h-8 text-[var(--color-primary,#2563eb)]" />
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+    <div className="min-w-0 max-w-full">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-5 sm:mb-6">
+        <div className="flex items-center gap-3 min-w-0">
+          <Warehouse className="w-7 h-7 sm:w-8 sm:h-8 text-[var(--color-primary,#2563eb)] shrink-0" />
+          <h1 className="text-lg sm:text-3xl font-bold text-gray-900 dark:text-white leading-tight">
             Almacenes
           </h1>
         </div>
+        <div className="w-full sm:w-auto shrink-0 [&_button]:w-full sm:[&_button]:w-auto min-h-[44px] sm:min-h-0">
         <CrearAlmacen onSuccess={cargaAlmacenes} />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

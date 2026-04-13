@@ -1,11 +1,49 @@
 import express from 'express';
 import { pool } from '../config/database.js';
-import { authenticateToken, checkRole } from '../middleware/auth.middleware.js';
+import { authenticateToken, checkPermission, checkRole } from '../middleware/auth.middleware.js';
+import { emitirNotificacion } from '../utils/notificaciones.js';
 
 const router = express.Router();
 router.use(authenticateToken);
 
 const TIPOS_SALIDA = ['Embarque', 'Venta Local', 'Reempaque', 'Reproceso', 'Etiquetado', 'Muestreo', 'Otros'];
+
+const getRestriccionProductosDespacho = async (client, despachoId) => {
+  const cab = await client.query(
+    `SELECT id, tipo_salida, TRIM(COALESCE(estado, '')) AS estado, TRIM(COALESCE(orden_produccion, '')) AS orden_produccion
+     FROM despachos
+     WHERE id = $1`,
+    [despachoId]
+  );
+  if (cab.rows.length === 0) return null;
+  const row = cab.rows[0];
+  const op = String(row.orden_produccion || '').trim();
+  /** Solo aplica resaltado / restricción por OP mientras el despacho se puede editar (en curso). */
+  const despachoEnCurso = String(row.estado || '').trim() === 'Registrado';
+  if (String(row.tipo_salida || '') !== 'Embarque' || !op) {
+    return { activa: false, orden_produccion: op, productos: [], ids: new Set(), codigos: new Set() };
+  }
+
+  const productosQ = await client.query(
+    `SELECT p.id AS producto_id,
+            TRIM(COALESCE(p.codigo, '')) AS codigo,
+            COALESCE(SUM(oel.cantidad_solicitada), 0)::NUMERIC AS requerido_bultos
+     FROM ordenes_exportacion oe
+     JOIN ordenes_exportacion_lineas oel ON oel.orden_exportacion_id = oe.id
+     JOIN productos p ON p.id = oel.producto_id
+     WHERE TRIM(COALESCE(oe.numero_op, '')) = $1
+     GROUP BY p.id, TRIM(COALESCE(p.codigo, ''))`,
+    [op]
+  );
+  const productos = productosQ.rows || [];
+  return {
+    activa: despachoEnCurso && productos.length > 0,
+    orden_produccion: op,
+    productos,
+    ids: new Set(productos.map((p) => p.producto_id).filter(Boolean)),
+    codigos: new Set(productos.map((p) => String(p.codigo || '').trim()).filter(Boolean)),
+  };
+};
 
 /**
  * GET /api/despachos
@@ -86,14 +124,14 @@ router.get('/', async (req, res) => {
       let totales;
       if (row.movimiento_id) {
         totales = await pool.query(
-          `SELECT COALESCE(SUM(md.cantidad_bultos), 0)::INTEGER AS total_bultos,
+          `SELECT COALESCE(SUM(md.cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
                   COALESCE(SUM(md.total_kg), 0)::NUMERIC(12,2) AS total_kg
            FROM movimiento_detalles md WHERE md.movimiento_id = $1`,
           [row.movimiento_id]
         );
       } else {
         totales = await pool.query(
-          `SELECT COALESCE(SUM(dd.cantidad_bultos), 0)::INTEGER AS total_bultos,
+          `SELECT COALESCE(SUM(dd.cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
                   COALESCE(SUM(dd.total_kg), 0)::NUMERIC(12,2) AS total_kg
            FROM despacho_detalles dd WHERE dd.despacho_id = $1`,
           [row.id]
@@ -103,7 +141,7 @@ router.get('/', async (req, res) => {
       let especiesResp;
       if (row.movimiento_id) {
         productosResp = await pool.query(
-          `SELECT DISTINCT p.codigo, p.descripcion, md.stock_posicion_id,
+          `SELECT p.codigo, p.descripcion, md.stock_posicion_id, md.cantidad_bultos,
                   (SELECT sp.lote FROM stock_posiciones sp WHERE sp.id = md.stock_posicion_id LIMIT 1) AS lote
            FROM movimiento_detalles md JOIN productos p ON p.id = md.producto_id WHERE md.movimiento_id = $1`,
           [row.movimiento_id]
@@ -114,7 +152,11 @@ router.get('/', async (req, res) => {
         );
       } else {
         productosResp = await pool.query(
-          `SELECT DISTINCT p.codigo, p.descripcion, s.lote FROM despacho_detalles dd JOIN stock_posiciones s ON s.id = dd.stock_posicion_id JOIN productos p ON p.id = s.producto_id WHERE dd.despacho_id = $1`,
+          `SELECT p.codigo, p.descripcion, s.lote, s.id AS stock_posicion_id, dd.cantidad_bultos
+           FROM despacho_detalles dd
+           JOIN stock_posiciones s ON s.id = dd.stock_posicion_id
+           JOIN productos p ON p.id = s.producto_id
+           WHERE dd.despacho_id = $1`,
           [row.id]
         );
         especiesResp = await pool.query(
@@ -129,7 +171,13 @@ router.get('/', async (req, res) => {
         referencia_salida: row.guia_salida || '-',
         total_bultos: Number(totales.rows[0]?.total_bultos) || 0,
         total_kg: Number(totales.rows[0]?.total_kg) || 0,
-        productos: productosResp.rows.map((r) => ({ codigo: r.codigo, descripcion: r.descripcion || '', lote: r.lote || '' })),
+        productos: productosResp.rows.map((r) => ({
+          codigo: r.codigo,
+          descripcion: r.descripcion || '',
+          lote: r.lote || '',
+          stock_posicion_id: r.stock_posicion_id || null,
+          cantidad_bultos: Number(r.cantidad_bultos) || 0,
+        })),
         especie_nombre: especies.length > 1 ? 'Varias' : especies[0] || '-',
       });
     }
@@ -137,6 +185,43 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Error listando despachos:', error);
     res.status(500).json({ message: 'Error al listar despachos' });
+  }
+});
+
+/**
+ * PATCH /api/despachos/sincronizar-fecha-referencia
+ * Sincroniza fecha_salida en despachos registrados creados desde "Listos para despacho".
+ * Body: { orden_produccion, referencia, fecha_salida }
+ */
+router.patch('/sincronizar-fecha-referencia', async (req, res) => {
+  try {
+    const ordenProduccion = String(req.body?.orden_produccion || '').trim();
+    const referencia = String(req.body?.referencia || '').trim();
+    const fechaSalida = String(req.body?.fecha_salida || '').trim().slice(0, 10);
+
+    if (!ordenProduccion || !referencia || !/^\d{4}-\d{2}-\d{2}$/.test(fechaSalida)) {
+      return res.status(400).json({ message: 'orden_produccion, referencia y fecha_salida (YYYY-MM-DD) son requeridos' });
+    }
+
+    const up = await pool.query(
+      `UPDATE despachos d
+       SET fecha_salida = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE d.estado = 'Registrado'
+         AND d.tipo_salida = 'Embarque'
+         AND TRIM(COALESCE(d.orden_produccion, '')) = $2
+         AND COALESCE(d.observaciones, '') ILIKE $3`,
+      [fechaSalida, ordenProduccion, `%Referencia: ${referencia}%`]
+    );
+
+    res.json({
+      message: up.rowCount > 0
+        ? `Fecha sincronizada en ${up.rowCount} despacho(s) registrado(s)`
+        : 'No se encontraron despachos registrados para sincronizar con esta referencia',
+      actualizados: up.rowCount || 0,
+    });
+  } catch (error) {
+    console.error('Error sincronizando fecha de despacho por referencia:', error);
+    res.status(500).json({ message: 'Error al sincronizar fecha en despachos' });
   }
 });
 
@@ -167,7 +252,7 @@ router.get('/:id', async (req, res) => {
     let total_adicional_despacho = null;
     if (despacho.movimiento_id) {
       const totalesMov = await pool.query(
-        `SELECT COALESCE(SUM(md.cantidad_bultos), 0)::INTEGER AS total_bultos,
+        `SELECT COALESCE(SUM(md.cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
                 COALESCE(SUM(md.total_kg), 0)::NUMERIC(12,2) AS total_kg,
                 COALESCE(SUM(md.peso_adicional), 0)::NUMERIC(12,2) AS total_adicional
          FROM movimiento_detalles md WHERE md.movimiento_id = $1`,
@@ -260,6 +345,33 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
     console.error('Error obteniendo despacho:', error);
     res.status(500).json({ message: 'Error al obtener el despacho' });
+  }
+});
+
+/**
+ * GET /api/despachos/:id/productos-requeridos
+ * Devuelve codigos/ids permitidos cuando el despacho es Embarque con OP.
+ */
+router.get('/:id/productos-requeridos', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const restriccion = await getRestriccionProductosDespacho(client, id);
+    if (!restriccion) return res.status(404).json({ message: 'Despacho no encontrado' });
+    res.json({
+      activa: !!restriccion.activa,
+      orden_produccion: restriccion.orden_produccion || '',
+      productos: restriccion.productos.map((p) => ({
+        producto_id: p.producto_id,
+        codigo: p.codigo,
+        requerido_bultos: Number(p.requerido_bultos) || 0,
+      })),
+    });
+  } catch (error) {
+    console.error('Error obteniendo productos requeridos del despacho:', error);
+    res.status(500).json({ message: 'Error al obtener productos requeridos' });
+  } finally {
+    client.release();
   }
 });
 
@@ -359,6 +471,20 @@ router.post('/', async (req, res) => {
     }
 
     await client.query('COMMIT');
+    try {
+      await emitirNotificacion(pool, {
+        tipo: 'despacho_creado',
+        modulo: 'Despachos',
+        severidad: 'info',
+        titulo: `Despacho creado (${tipo_salida})`,
+        mensaje: `Estado inicial: Registrado.`,
+        origen_tabla: 'despachos',
+        origen_id: despachoId,
+        metadata: { despacho_id: despachoId, tipo_salida, usuario_id, lineas: lineasArray.length },
+      });
+    } catch (eNotif) {
+      console.warn('Notificación despacho_creado:', eNotif.message);
+    }
     res.status(201).json({ id: despachoId, message: 'Despacho registrado correctamente', estado: 'Registrado' });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -480,6 +606,72 @@ router.put('/:id', async (req, res) => {
 
 const FACTOR_LB_A_KG = 2.2046;
 
+async function crearFilaSaldoStock(client, stockOrigenId, bultosSaldo, kgSaldo) {
+  const saldoBultos = Number(bultosSaldo) || 0;
+  const saldoKg = Number(kgSaldo) || 0;
+  if (saldoBultos <= 0 && saldoKg <= 0) return null;
+
+  const base = await client.query(
+    `SELECT posicion_id, producto_id, lote, referencia, fecha_ingreso
+     FROM stock_posiciones
+     WHERE id = $1`,
+    [stockOrigenId]
+  );
+  if (base.rows.length === 0) return null;
+  const b = base.rows[0];
+
+  const ins = await client.query(
+    `INSERT INTO stock_posiciones
+      (posicion_id, producto_id, lote, referencia, fecha_ingreso, cantidad_bultos, peso_adicional, total_kg)
+     VALUES ($1, $2, $3, $4, $5, $6, 0, $7)
+     RETURNING id`,
+    [b.posicion_id, b.producto_id, b.lote || null, b.referencia, b.fecha_ingreso, saldoBultos, saldoKg]
+  );
+  return ins.rows[0]?.id || null;
+}
+
+async function compactarStockCompatibles(client, stockId) {
+  const base = await client.query(
+    `SELECT posicion_id, producto_id, lote, referencia, fecha_ingreso
+     FROM stock_posiciones
+     WHERE id = $1`,
+    [stockId]
+  );
+  if (base.rows.length === 0) return;
+  const b = base.rows[0];
+
+  const rows = await client.query(
+    `SELECT s.id, s.cantidad_bultos, s.total_kg, COALESCE(s.peso_adicional, 0) AS peso_adicional
+     FROM stock_posiciones s
+     LEFT JOIN despacho_detalles dd ON dd.stock_posicion_id = s.id
+     WHERE s.posicion_id = $1
+       AND s.producto_id = $2
+       AND s.lote IS NOT DISTINCT FROM $3
+       AND s.referencia = $4
+       AND s.fecha_ingreso = $5
+       AND dd.id IS NULL
+     ORDER BY s.created_at, s.id`,
+    [b.posicion_id, b.producto_id, b.lote || null, b.referencia, b.fecha_ingreso]
+  );
+  if (rows.rows.length <= 1) return;
+
+  const keepId = rows.rows[0].id;
+  const totalBultos = rows.rows.reduce((acc, r) => acc + (Number(r.cantidad_bultos) || 0), 0);
+  const totalKg = rows.rows.reduce((acc, r) => acc + (Number(r.total_kg) || 0), 0);
+  const totalAdic = rows.rows.reduce((acc, r) => acc + (Number(r.peso_adicional) || 0), 0);
+  const eliminarIds = rows.rows.slice(1).map((r) => r.id);
+
+  await client.query(
+    `UPDATE stock_posiciones
+     SET cantidad_bultos = $1, total_kg = $2, peso_adicional = $3, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $4`,
+    [totalBultos, totalKg, totalAdic, keepId]
+  );
+  if (eliminarIds.length > 0) {
+    await client.query('DELETE FROM stock_posiciones WHERE id = ANY($1::uuid[])', [eliminarIds]);
+  }
+}
+
 function calcularTotalKg(client, stock_posicion_id, bultos, peso_adicional) {
   return client.query(
     'SELECT s.cantidad_bultos, s.total_kg AS stock_total_kg, COALESCE(s.peso_adicional, 0) AS stock_peso_adicional, p.formato, p.unidad_medida FROM stock_posiciones s JOIN productos p ON p.id = s.producto_id WHERE s.id = $1',
@@ -520,6 +712,7 @@ router.post('/:id/lineas', async (req, res) => {
 
     const existentes = await client.query('SELECT stock_posicion_id FROM despacho_detalles WHERE despacho_id = $1', [id]);
     const idsEnDespacho = new Set(existentes.rows.map((r) => r.stock_posicion_id));
+    const restriccion = await getRestriccionProductosDespacho(client, id);
 
     await client.query('BEGIN');
 
@@ -540,9 +733,19 @@ router.post('/:id/lineas', async (req, res) => {
         return res.status(400).json({ message: `El stock ${stock_posicion_id} ya está en este despacho` });
       }
       const stock = await client.query(
-        'SELECT id, cantidad_bultos FROM stock_posiciones WHERE id = $1',
+        `SELECT s.id, s.cantidad_bultos, s.producto_id, TRIM(COALESCE(p.codigo, '')) AS producto_codigo
+         FROM stock_posiciones s
+         LEFT JOIN productos p ON p.id = s.producto_id
+         WHERE s.id = $1`,
         [stock_posicion_id]
       );
+      if (restriccion?.activa && !restriccion.ids.has(stock.rows[0].producto_id)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          message: `Producto no requerido para esta OP (${stock.rows[0].producto_codigo || 'sin código'}).`,
+        });
+      }
+
       if (stock.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(400).json({ message: 'Stock no encontrado en una de las líneas' });
@@ -598,11 +801,29 @@ router.post('/:id/agregar-posicion', async (req, res) => {
       return res.status(403).json({ message: 'Solo se pueden agregar líneas a un despacho con estado Registrado' });
     }
 
+    const restriccion = await getRestriccionProductosDespacho(client, id);
+
     const stockEnPosicion = await client.query(
-      `SELECT s.id AS stock_posicion_id, s.cantidad_bultos, s.total_kg, s.peso_adicional
-       FROM stock_posiciones s WHERE s.posicion_id = $1`,
+      `SELECT s.id AS stock_posicion_id, s.cantidad_bultos, s.total_kg, s.peso_adicional,
+              s.producto_id, TRIM(COALESCE(p.codigo, '')) AS producto_codigo
+       FROM stock_posiciones s
+       LEFT JOIN productos p ON p.id = s.producto_id
+       WHERE s.posicion_id = $1`,
       [posicion_id]
     );
+    const stockFiltrado = restriccion?.activa
+      ? stockEnPosicion.rows.filter((s) => restriccion.ids.has(s.producto_id))
+      : stockEnPosicion.rows;
+    const noPermitidos = restriccion?.activa
+      ? stockEnPosicion.rows.filter((s) => !restriccion.ids.has(s.producto_id))
+      : [];
+    if (restriccion?.activa && stockFiltrado.length === 0) {
+      const codigosNoReq = [...new Set(noPermitidos.map((x) => x.producto_codigo).filter(Boolean))].join(', ');
+      return res.status(400).json({
+        message: `No hay productos requeridos de la OP en esta posición. Detectados no requeridos: ${codigosNoReq || 'sin código'}.`,
+      });
+    }
+
     if (stockEnPosicion.rows.length === 0) {
       return res.status(404).json({ message: 'No hay stock en esa posición' });
     }
@@ -613,7 +834,7 @@ router.post('/:id/agregar-posicion', async (req, res) => {
     await client.query('BEGIN');
 
     let agregadas = 0;
-    for (const s of stockEnPosicion.rows) {
+    for (const s of stockFiltrado) {
       const stock_posicion_id = s.stock_posicion_id;
       if (idsEnDespacho.has(stock_posicion_id)) continue;
       const bultos = Math.max(0, Number(s.cantidad_bultos) || 0);
@@ -629,7 +850,14 @@ router.post('/:id/agregar-posicion', async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json({ message: agregadas > 0 ? `Se agregaron ${agregadas} línea(s) al despacho` : 'No había stock nuevo en la posición para agregar', agregadas });
+    const codigosNoReq = [...new Set(noPermitidos.map((x) => x.producto_codigo).filter(Boolean))];
+    const msgBase = agregadas > 0
+      ? `Se agregaron ${agregadas} línea(s) al despacho`
+      : 'No había stock nuevo en la posición para agregar';
+    const msgFinal = restriccion?.activa && codigosNoReq.length > 0
+      ? `${msgBase}. Se omitieron productos no requeridos: ${codigosNoReq.join(', ')}.`
+      : msgBase;
+    res.json({ message: msgFinal, agregadas, omitidas_no_requeridas: codigosNoReq.length });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error agregando posición al despacho:', error);
@@ -668,7 +896,7 @@ router.put('/:id/lineas', async (req, res) => {
       if (!lineaId) continue;
 
       const linea = await client.query(
-        'SELECT dd.id, dd.stock_posicion_id FROM despacho_detalles dd WHERE dd.id = $1 AND dd.despacho_id = $2',
+        'SELECT dd.id, dd.stock_posicion_id, dd.cantidad_bultos FROM despacho_detalles dd WHERE dd.id = $1 AND dd.despacho_id = $2',
         [lineaId, id]
       );
       if (linea.rows.length === 0) {
@@ -686,7 +914,7 @@ router.put('/:id/lineas', async (req, res) => {
       const adicional = Math.max(0, Number(peso_adicional) || 0);
 
       const stock = await client.query(
-        'SELECT s.cantidad_bultos, s.total_kg AS stock_total_kg, COALESCE(s.peso_adicional, 0) AS stock_peso_adicional, p.formato, p.unidad_medida FROM stock_posiciones s JOIN productos p ON p.id = s.producto_id WHERE s.id = $1',
+        'SELECT s.id, s.cantidad_bultos, s.total_kg AS stock_total_kg, COALESCE(s.peso_adicional, 0) AS stock_peso_adicional, p.formato, p.unidad_medida FROM stock_posiciones s JOIN productos p ON p.id = s.producto_id WHERE s.id = $1',
         [stock_posicion_id]
       );
       if (stock.rows.length === 0) {
@@ -719,6 +947,20 @@ router.put('/:id/lineas', async (req, res) => {
         'UPDATE despacho_detalles SET cantidad_bultos = $1, total_kg = $2, peso_adicional = $3 WHERE id = $4 AND despacho_id = $5',
         [bultos, totalKg, adicional, lineaId, id]
       );
+
+      const stockActualBultos = Number(s.cantidad_bultos) || 0;
+      if (bultos < stockActualBultos) {
+        const kgDisponible = (Number(s.stock_total_kg) || 0) + (Number(s.stock_peso_adicional) || 0);
+        const kgSaldo = Math.max(0, kgDisponible - totalKg);
+        const bultosSaldo = Math.max(0, stockActualBultos - bultos);
+        await client.query(
+          `UPDATE stock_posiciones
+           SET cantidad_bultos = $1, total_kg = $2, peso_adicional = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [bultos, totalKg, stock_posicion_id]
+        );
+        await crearFilaSaldoStock(client, stock_posicion_id, bultosSaldo, kgSaldo);
+      }
     }
 
     await client.query('COMMIT');
@@ -753,7 +995,7 @@ router.patch('/:id/lineas/:lineaId', async (req, res) => {
     }
 
     const linea = await client.query(
-      'SELECT dd.id, dd.stock_posicion_id FROM despacho_detalles dd WHERE dd.id = $1 AND dd.despacho_id = $2',
+      'SELECT dd.id, dd.stock_posicion_id, dd.cantidad_bultos FROM despacho_detalles dd WHERE dd.id = $1 AND dd.despacho_id = $2',
       [lineaId, id]
     );
     if (linea.rows.length === 0) {
@@ -770,7 +1012,7 @@ router.patch('/:id/lineas/:lineaId', async (req, res) => {
     const adicional = Math.max(0, Number(peso_adicional) || 0);
 
     const stock = await client.query(
-      'SELECT s.cantidad_bultos, s.total_kg AS stock_total_kg, COALESCE(s.peso_adicional, 0) AS stock_peso_adicional, p.formato, p.unidad_medida FROM stock_posiciones s JOIN productos p ON p.id = s.producto_id WHERE s.id = $1',
+      'SELECT s.id, s.cantidad_bultos, s.total_kg AS stock_total_kg, COALESCE(s.peso_adicional, 0) AS stock_peso_adicional, p.formato, p.unidad_medida FROM stock_posiciones s JOIN productos p ON p.id = s.producto_id WHERE s.id = $1',
       [stock_posicion_id]
     );
     if (stock.rows.length === 0) {
@@ -795,10 +1037,32 @@ router.patch('/:id/lineas/:lineaId', async (req, res) => {
       return res.status(400).json({ message: 'La línea debe tener cantidad_bultos > 0 o peso_adicional > 0' });
     }
 
-    await client.query(
-      'UPDATE despacho_detalles SET cantidad_bultos = $1, total_kg = $2, peso_adicional = $3 WHERE id = $4 AND despacho_id = $5',
-      [bultos, totalKg, adicional, lineaId, id]
-    );
+    await client.query('BEGIN');
+    try {
+      await client.query(
+        'UPDATE despacho_detalles SET cantidad_bultos = $1, total_kg = $2, peso_adicional = $3 WHERE id = $4 AND despacho_id = $5',
+        [bultos, totalKg, adicional, lineaId, id]
+      );
+
+      const stockActualBultos = Number(s.cantidad_bultos) || 0;
+      if (bultos < stockActualBultos) {
+        const kgDisponible = (Number(s.stock_total_kg) || 0) + (Number(s.stock_peso_adicional) || 0);
+        const kgSaldo = Math.max(0, kgDisponible - totalKg);
+        const bultosSaldo = Math.max(0, stockActualBultos - bultos);
+        await client.query(
+          `UPDATE stock_posiciones
+           SET cantidad_bultos = $1, total_kg = $2, peso_adicional = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [bultos, totalKg, stock_posicion_id]
+        );
+        await crearFilaSaldoStock(client, stock_posicion_id, bultosSaldo, kgSaldo);
+      }
+
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    }
     res.json({ message: 'Línea actualizada', cantidad_bultos: bultos, total_kg: totalKg, peso_adicional: adicional });
   } catch (error) {
     console.error('Error actualizando línea del despacho:', error);
@@ -812,10 +1076,11 @@ router.patch('/:id/lineas/:lineaId', async (req, res) => {
  * DELETE /api/despachos/:id/lineas/:lineaId - Quitar una línea del despacho (estado = Registrado)
  */
 router.delete('/:id/lineas/:lineaId', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id, lineaId } = req.params;
 
-    const cab = await pool.query('SELECT id, estado FROM despachos WHERE id = $1', [id]);
+    const cab = await client.query('SELECT id, estado FROM despachos WHERE id = $1', [id]);
     if (cab.rows.length === 0) {
       return res.status(404).json({ message: 'Despacho no encontrado' });
     }
@@ -823,29 +1088,37 @@ router.delete('/:id/lineas/:lineaId', async (req, res) => {
       return res.status(403).json({ message: 'Solo se puede quitar líneas de un despacho con estado Registrado' });
     }
 
-    const del = await pool.query(
-      'DELETE FROM despacho_detalles WHERE id = $1 AND despacho_id = $2 RETURNING id',
+    await client.query('BEGIN');
+    const del = await client.query(
+      'DELETE FROM despacho_detalles WHERE id = $1 AND despacho_id = $2 RETURNING id, stock_posicion_id',
       [lineaId, id]
     );
     if (del.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Línea no encontrada en este despacho' });
     }
+    const stockId = del.rows[0]?.stock_posicion_id || null;
+    if (stockId) await compactarStockCompatibles(client, stockId);
+    await client.query('COMMIT');
     res.json({ message: 'Línea eliminada del despacho' });
   } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Error eliminando línea del despacho:', error);
     res.status(500).json({ message: 'Error al eliminar la línea' });
+  } finally {
+    client.release();
   }
 });
 
 /**
  * PATCH /api/despachos/:id/reabrir - Reabrir despacho (solo Admin): vuelve a Registrado, devuelve stock y restaura líneas
  */
-router.patch('/:id/reabrir', checkRole('Admin'), async (req, res) => {
+router.patch('/:id/reabrir', checkPermission('exportaciones.despachos', 'operate'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
 
-    const cab = await client.query('SELECT id, estado, movimiento_id FROM despachos WHERE id = $1', [id]);
+    const cab = await client.query('SELECT id, estado, movimiento_id, tipo_salida, orden_produccion FROM despachos WHERE id = $1', [id]);
     if (cab.rows.length === 0) {
       return res.status(404).json({ message: 'Despacho no encontrado' });
     }
@@ -896,7 +1169,32 @@ router.patch('/:id/reabrir', checkRole('Admin'), async (req, res) => {
       ['Registrado', null, id]
     );
 
+    if (String(cab.rows[0]?.tipo_salida || '') === 'Embarque' && String(cab.rows[0]?.orden_produccion || '').trim()) {
+      await client.query(
+        `UPDATE ordenes_exportacion
+         SET estado = CASE WHEN estado IN ('Completo', 'Embarcado') THEN 'En producción' ELSE estado END,
+             notificado_at = CASE WHEN estado IN ('Completo', 'Embarcado') THEN NULL ELSE notificado_at END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE TRIM(COALESCE(numero_op, '')) = $1`,
+        [String(cab.rows[0].orden_produccion).trim()]
+      ).catch(() => {});
+    }
+
     await client.query('COMMIT');
+    try {
+      await emitirNotificacion(pool, {
+        tipo: 'despacho_reabierto',
+        modulo: 'Despachos',
+        severidad: 'warning',
+        titulo: 'Despacho reabierto',
+        mensaje: 'Se revirtió un despacho a estado Registrado.',
+        origen_tabla: 'despachos',
+        origen_id: id,
+        metadata: { despacho_id: id, usuario_id: req.user?.id || null },
+      });
+    } catch (eNotif) {
+      console.warn('Notificación despacho_reabierto:', eNotif.message);
+    }
     res.json({ message: 'Despacho reabierto correctamente. Puede editar y volver a dar salida.', estado: 'Registrado' });
   } catch (error) {
     try {
@@ -917,18 +1215,42 @@ router.patch('/:id/estado', async (req, res) => {
   try {
     const { id } = req.params;
     const { estado } = req.body;
+    const guiaSalidaReq = String(req.body?.guia_salida || '').trim();
+    const contenedorReq = String(req.body?.contenedor || '').trim();
+    const fechaSalidaBody = req.body?.fecha_salida;
     const usuario_id = req.user.id;
 
     if (estado !== 'Despachado') {
       return res.status(400).json({ message: 'Solo se puede cambiar a estado Despachado' });
     }
 
-    const cab = await client.query('SELECT id, estado, tipo_salida, guia_salida, destino FROM despachos WHERE id = $1', [id]);
+    const cab = await client.query('SELECT id, estado, tipo_salida, guia_salida, destino, fecha_salida, orden_produccion FROM despachos WHERE id = $1', [id]);
     if (cab.rows.length === 0) {
       return res.status(404).json({ message: 'Despacho no encontrado' });
     }
     if (cab.rows[0].estado !== 'Registrado') {
       return res.status(400).json({ message: 'El despacho ya está despachado' });
+    }
+
+    const toDateStr = (v) => {
+      if (v == null) return null;
+      if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+      const s = String(v).trim().slice(0, 10);
+      return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+    };
+    let fechaSalidaFinal = toDateStr(cab.rows[0].fecha_salida);
+    if (fechaSalidaBody != null && String(fechaSalidaBody).trim() !== '') {
+      const raw = toDateStr(fechaSalidaBody);
+      if (raw) fechaSalidaFinal = raw;
+    }
+    if (!fechaSalidaFinal) {
+      fechaSalidaFinal = new Date().toISOString().slice(0, 10);
+    }
+    if (!contenedorReq) {
+      return res.status(400).json({ message: 'El número de contenedor es obligatorio para finalizar el despacho' });
+    }
+    if (!guiaSalidaReq) {
+      return res.status(400).json({ message: 'La guía de salida es obligatoria para finalizar el despacho' });
     }
 
     const countLineas = await client.query('SELECT COUNT(*) AS c FROM despacho_detalles WHERE despacho_id = $1', [id]);
@@ -954,6 +1276,47 @@ router.patch('/:id/estado', async (req, res) => {
       [id]
     );
 
+    if (String(cab.rows[0]?.tipo_salida || '') === 'Embarque' && String(cab.rows[0]?.orden_produccion || '').trim()) {
+      const op = String(cab.rows[0].orden_produccion).trim();
+      const requeridosQ = await client.query(
+        `SELECT oel.producto_id, TRIM(COALESCE(p.codigo, '')) AS codigo,
+                COALESCE(SUM(oel.cantidad_solicitada), 0)::NUMERIC AS requerido_bultos
+         FROM ordenes_exportacion oe
+         JOIN ordenes_exportacion_lineas oel ON oel.orden_exportacion_id = oe.id
+         JOIN productos p ON p.id = oel.producto_id
+         WHERE TRIM(COALESCE(oe.numero_op, '')) = $1
+         GROUP BY oel.producto_id, TRIM(COALESCE(p.codigo, ''))`,
+        [op]
+      );
+      const reqMap = new Map(
+        requeridosQ.rows.map((r) => [String(r.producto_id), { codigo: String(r.codigo || ''), requerido: Number(r.requerido_bultos) || 0 }])
+      );
+      const enviadosQ = await client.query(
+        `SELECT s.producto_id, COALESCE(SUM(dd.cantidad_bultos), 0)::NUMERIC AS enviado_bultos
+         FROM despacho_detalles dd
+         JOIN stock_posiciones s ON s.id = dd.stock_posicion_id
+         WHERE dd.despacho_id = $1
+         GROUP BY s.producto_id`,
+        [id]
+      );
+      const excedidos = enviadosQ.rows
+        .map((r) => {
+          const pid = String(r.producto_id)
+          const enviado = Number(r.enviado_bultos) || 0
+          const req = reqMap.get(pid)
+          const requerido = req ? Number(req.requerido) || 0 : 0
+          return { codigo: req?.codigo || pid, enviado, requerido }
+        })
+        .filter((x) => x.enviado > x.requerido + 1e-6);
+      if (excedidos.length > 0) {
+        await client.query('ROLLBACK');
+        const detalleExceso = excedidos.map((x) => `${x.codigo}: ${x.enviado} > ${x.requerido}`).join(' | ');
+        return res.status(400).json({
+          message: `No se puede finalizar: hay productos con bultos por encima de lo requerido en la OP. ${detalleExceso}`,
+        });
+      }
+    }
+
     const lineasSinStock = detalles.rows.filter((d) => !d.stock_posicion_id || d.stock_bultos == null);
     if (lineasSinStock.length > 0) {
       await client.query('ROLLBACK');
@@ -977,8 +1340,8 @@ router.patch('/:id/estado', async (req, res) => {
       }
     }
 
-    const motivoSalida = cab.rows[0].guia_salida
-      ? `Despacho ${cab.rows[0].tipo_salida} - Guía ${cab.rows[0].guia_salida}`
+    const motivoSalida = guiaSalidaReq
+      ? `Despacho ${cab.rows[0].tipo_salida} - Guía ${guiaSalidaReq}`
       : cab.rows[0].destino
       ? `Despacho ${cab.rows[0].tipo_salida} - ${cab.rows[0].destino}`
       : `Despacho ${cab.rows[0].tipo_salida}`;
@@ -1041,13 +1404,36 @@ router.patch('/:id/estado', async (req, res) => {
       }
     }
 
-    await client.query('UPDATE despachos SET estado = $1, movimiento_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3', [
-      'Despachado',
-      movimientoId,
-      id,
-    ]);
+    await client.query(
+      'UPDATE despachos SET estado = $1, movimiento_id = $2, guia_salida = $3, contenedor = $4, fecha_salida = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6',
+      ['Despachado', movimientoId, guiaSalidaReq, contenedorReq, fechaSalidaFinal, id]
+    );
+
+    // Si el despacho corresponde a una OP de exportación, avanzar estado a Embarcado.
+    if (String(cab.rows[0]?.tipo_salida || '') === 'Embarque' && String(cab.rows[0]?.orden_produccion || '').trim()) {
+      await client.query(
+        `UPDATE ordenes_exportacion
+         SET estado = 'Embarcado', updated_at = CURRENT_TIMESTAMP
+         WHERE TRIM(COALESCE(numero_op, '')) = $1`,
+        [String(cab.rows[0].orden_produccion).trim()]
+      ).catch(() => {});
+    }
 
     await client.query('COMMIT');
+    try {
+      await emitirNotificacion(pool, {
+        tipo: 'despacho_despachado',
+        modulo: 'Despachos',
+        severidad: 'success',
+        titulo: `Despacho realizado (${cab.rows[0]?.tipo_salida || 'Salida'})`,
+        mensaje: `Guía: ${guiaSalidaReq}.`,
+        origen_tabla: 'despachos',
+        origen_id: id,
+        metadata: { despacho_id: id, tipo_salida: cab.rows[0]?.tipo_salida, guia_salida: guiaSalidaReq, usuario_id },
+      });
+    } catch (eNotif) {
+      console.warn('Notificación despacho_despachado:', eNotif.message);
+    }
     res.json({ message: 'Los datos fueron registrados exitosamente', estado: 'Despachado' });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1063,20 +1449,34 @@ router.patch('/:id/estado', async (req, res) => {
  * DELETE /api/despachos/:id - Solo si estado = Registrado
  */
 router.delete('/:id', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
-    const cab = await pool.query('SELECT id, estado FROM despachos WHERE id = $1', [id]);
+    const cab = await client.query('SELECT id, estado FROM despachos WHERE id = $1', [id]);
     if (cab.rows.length === 0) {
       return res.status(404).json({ message: 'Despacho no encontrado' });
     }
     if (cab.rows[0].estado !== 'Registrado') {
       return res.status(403).json({ message: 'Solo se puede eliminar un despacho con estado Registrado' });
     }
-    await pool.query('DELETE FROM despachos WHERE id = $1', [id]);
+    const stockRows = await client.query(
+      'SELECT stock_posicion_id FROM despacho_detalles WHERE despacho_id = $1',
+      [id]
+    );
+    const stockIds = Array.from(new Set((stockRows.rows || []).map((r) => r.stock_posicion_id).filter(Boolean)));
+    await client.query('BEGIN');
+    await client.query('DELETE FROM despachos WHERE id = $1', [id]);
+    for (const stockId of stockIds) {
+      await compactarStockCompatibles(client, stockId);
+    }
+    await client.query('COMMIT');
     res.json({ message: 'Despacho eliminado correctamente' });
   } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Error eliminando despacho:', error);
     res.status(500).json({ message: 'Error al eliminar el despacho' });
+  } finally {
+    client.release();
   }
 });
 

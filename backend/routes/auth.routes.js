@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { body, validationResult } from 'express-validator';
 import { pool } from '../config/database.js';
+import { normalizeRole, resolveUserPermissions } from '../utils/rbac.js';
 
 const router = express.Router();
 
@@ -43,12 +44,15 @@ router.post('/login',
         return res.status(401).json({ message: 'Credenciales inválidas' });
       }
 
+      const normalizedRole = normalizeRole(user.rol);
+      const resolvedPermissions = await resolveUserPermissions(user.id, normalizedRole);
+
       // Generar token
       const token = jwt.sign(
         { 
           id: user.id, 
           email: user.email, 
-          rol: user.rol 
+          rol: resolvedPermissions.role 
         },
         process.env.JWT_SECRET,
         { expiresIn: '24h' }
@@ -60,12 +64,16 @@ router.post('/login',
           id: user.id,
           nombre: user.nombre,
           email: user.email,
-          rol: user.rol
-        }
+          rol: resolvedPermissions.role,
+          permissions: resolvedPermissions.permissions
+        },
       });
     } catch (error) {
       console.error('Error en login:', error);
-      res.status(500).json({ message: 'Error interno del servidor' });
+      const message = process.env.NODE_ENV === 'development' 
+        ? (error.message || 'Error interno del servidor')
+        : 'Error interno del servidor';
+      res.status(500).json({ message });
     }
   }
 );
@@ -92,8 +100,14 @@ router.get('/verify', async (req, res) => {
       return res.status(401).json({ message: 'Usuario no encontrado o inactivo' });
     }
 
+    const normalizedRole = normalizeRole(result.rows[0].rol);
+    const resolvedPermissions = await resolveUserPermissions(result.rows[0].id, normalizedRole);
     res.json({
-      user: result.rows[0]
+      user: {
+        ...result.rows[0],
+        rol: resolvedPermissions.role,
+        permissions: resolvedPermissions.permissions,
+      }
     });
   } catch (error) {
     res.status(401).json({ message: 'Token inválido' });

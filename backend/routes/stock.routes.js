@@ -13,7 +13,7 @@ router.get('/resumen', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        COALESCE(SUM(cantidad_bultos), 0)::INTEGER AS total_bultos,
+        COALESCE(SUM(cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
         COALESCE(SUM(total_kg), 0)::NUMERIC(12,2) AS total_kg,
         COUNT(*)::INTEGER AS cantidad_registros
       FROM stock_posiciones
@@ -52,7 +52,7 @@ router.get('/resumen-por-cliente', async (req, res) => {
       ),
       stock_por_cliente AS (
         SELECT pr.cliente_id,
-               COALESCE(SUM(s.cantidad_bultos), 0)::INTEGER AS total_bultos,
+               COALESCE(SUM(s.cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
                COALESCE(SUM(s.total_kg), 0)::NUMERIC(12,2) AS total_kg
         FROM stock_posiciones s
         JOIN productos pr ON pr.id = s.producto_id AND pr.activo = TRUE
@@ -120,7 +120,7 @@ router.get('/', async (req, res) => {
       WITH stock_agg AS (
         SELECT 
           s.producto_id,
-          SUM(s.cantidad_bultos)::INTEGER AS total_bultos,
+          SUM(s.cantidad_bultos)::NUMERIC(14, 2) AS total_bultos,
           SUM(CASE WHEN COALESCE(s.total_kg, 0) > 0 THEN s.total_kg ELSE COALESCE(s.total_kg, 0) + COALESCE(s.peso_adicional, 0) END)::NUMERIC(12,2) AS total_kg,
           COALESCE(SUM(s.peso_adicional), 0)::NUMERIC(12,2) AS total_peso_adicional,
           COUNT(s.id)::INTEGER AS cantidad_registros
@@ -222,7 +222,7 @@ router.get('/', async (req, res) => {
 
     const countResult = await pool.query(
       `WITH stock_agg AS (
-        SELECT s.producto_id, SUM(s.cantidad_bultos)::INTEGER AS total_bultos,
+        SELECT s.producto_id, SUM(s.cantidad_bultos)::NUMERIC(14, 2) AS total_bultos,
                COALESCE(SUM(s.total_kg), 0)::NUMERIC(12,2) AS total_kg,
                COALESCE(SUM(s.peso_adicional), 0)::NUMERIC(12,2) AS total_peso_adicional
         FROM stock_posiciones s
@@ -341,11 +341,12 @@ router.get('/', async (req, res) => {
 /**
  * GET /api/stock/lineas
  * Lista plana: una fila por cada registro en stock_posiciones (para selector en despachos).
- * Query: cliente_id, especie_id, q, almacen_id, carril_id, nivel_id, posicion_id (filtros por ubicación)
+ * Incluye stock de parihuelas recepcionadas (mismo stock_posiciones). Filtros por cliente, especie, lote (código lote producción), q, ubicación.
+ * Query: cliente_id, especie_id, lote, q, almacen_id, carril_id, nivel_id, posicion_id
  */
 router.get('/lineas', async (req, res) => {
   try {
-    const { cliente_id, especie_id, q, almacen_id, carril_id, nivel_id, posicion_id } = req.query;
+    const { cliente_id, especie_id, lote, q, almacen_id, carril_id, nivel_id, posicion_id } = req.query;
     let query = `
       SELECT s.id AS stock_posicion_id,
              pr.id AS producto_id,
@@ -367,8 +368,8 @@ router.get('/lineas', async (req, res) => {
              pos.numero_posicion
       FROM stock_posiciones s
       JOIN productos pr ON pr.id = s.producto_id
-      JOIN clientes c ON c.id = pr.cliente_id
-      JOIN especies e ON e.id = pr.especie_id
+      LEFT JOIN clientes c ON c.id = pr.cliente_id
+      LEFT JOIN especies e ON e.id = pr.especie_id
       JOIN posiciones pos ON pos.id = s.posicion_id
       JOIN niveles n ON n.id = pos.nivel_id
       JOIN carriles car ON car.id = n.carril_id
@@ -386,6 +387,11 @@ router.get('/lineas', async (req, res) => {
     if (especie_id) {
       query += ` AND pr.especie_id = $${n}`;
       params.push(especie_id);
+      n++;
+    }
+    if (lote && lote.trim()) {
+      query += ` AND s.lote ILIKE $${n}`;
+      params.push(`%${lote.trim()}%`);
       n++;
     }
     if (q && q.trim()) {
@@ -425,8 +431,8 @@ router.get('/lineas', async (req, res) => {
       formato: Number(r.formato),
       unidad_medida: r.unidad_medida || 'KG',
       lote: r.lote || '',
-      cliente_nombre: r.cliente_nombre,
-      especie_nombre: r.especie_nombre,
+      cliente_nombre: r.cliente_nombre || null,
+      especie_nombre: r.especie_nombre || null,
       cantidad_bultos: Number(r.cantidad_bultos),
       total_kg: Number(r.total_kg),
       peso_adicional: Number(r.peso_adicional) || 0,
@@ -435,6 +441,97 @@ router.get('/lineas', async (req, res) => {
   } catch (error) {
     console.error('Error listando stock líneas:', error);
     res.status(500).json({ message: 'Error al listar stock' });
+  }
+});
+
+/**
+ * GET /api/stock/matriz-lote-produccion
+ * Matriz PPTT: filas = códigos de lote con stock en almacén, columnas = productos, celdas = bultos y kg (UI puede mostrar solo kg).
+ * Agrupa stock_posiciones por TRIM(lote) y producto_id (mismo criterio de kg que el listado general).
+ */
+router.get('/matriz-lote-produccion', async (req, res) => {
+  try {
+    const agg = await pool.query(`
+      WITH celda AS (
+        SELECT
+          TRIM(s.lote) AS lote_codigo,
+          s.producto_id,
+          SUM(s.cantidad_bultos)::NUMERIC(14, 2) AS bultos,
+          SUM(CASE WHEN COALESCE(s.total_kg, 0) > 0 THEN s.total_kg ELSE COALESCE(s.total_kg, 0) + COALESCE(s.peso_adicional, 0) END)::NUMERIC(12, 2) AS kg
+        FROM stock_posiciones s
+        WHERE TRIM(COALESCE(s.lote, '')) <> ''
+        GROUP BY TRIM(s.lote), s.producto_id
+      )
+      SELECT lote_codigo, producto_id, bultos, kg
+      FROM celda
+      WHERE bultos > 0 OR kg > 0
+      ORDER BY lote_codigo, producto_id
+    `);
+
+    const rows = agg.rows || [];
+    if (rows.length === 0) {
+      return res.json({ productos: [], lotes: [], celdas: [] });
+    }
+
+    const productoIds = [...new Set(rows.map((r) => r.producto_id))];
+    const pr = await pool.query(
+      `SELECT p.id AS producto_id, p.codigo, p.producto, p.descripcion, p.presentacion
+       FROM productos p
+       WHERE p.id = ANY($1::uuid[])
+       ORDER BY p.codigo NULLS LAST, p.producto`,
+      [productoIds]
+    );
+    const productos = pr.rows.map((p) => ({
+      producto_id: p.producto_id,
+      codigo: p.codigo,
+      producto: p.producto,
+      descripcion: p.descripcion || '',
+      presentacion: p.presentacion || '',
+    }));
+
+    const loteCodigos = [...new Set(rows.map((r) => r.lote_codigo))];
+    const lotesMeta = await pool.query(
+      `SELECT TRIM(codigo) AS codigo, id, estado, fecha_creacion
+       FROM lotes_produccion
+       WHERE TRIM(codigo) = ANY($1::text[])`,
+      [loteCodigos]
+    );
+    const metaByCodigo = new Map();
+    (lotesMeta.rows || []).forEach((r) => {
+      metaByCodigo.set(String(r.codigo).trim(), r);
+    });
+
+    const lotesOrdenados = loteCodigos.slice().sort((a, b) => {
+      const ma = metaByCodigo.get(a);
+      const mb = metaByCodigo.get(b);
+      const ta = ma?.fecha_creacion ? new Date(ma.fecha_creacion).getTime() : 0;
+      const tb = mb?.fecha_creacion ? new Date(mb.fecha_creacion).getTime() : 0;
+      if (tb !== ta) return tb - ta;
+      return String(a).localeCompare(String(b), 'es');
+    });
+
+    const celdas = rows.map((r) => ({
+      lote_codigo: r.lote_codigo,
+      producto_id: r.producto_id,
+      bultos: Number(r.bultos) || 0,
+      kg: Number(r.kg) || 0,
+    }));
+
+    res.json({
+      productos,
+      lotes: lotesOrdenados.map((codigo) => {
+        const m = metaByCodigo.get(codigo);
+        return {
+          codigo,
+          lote_produccion_id: m?.id || null,
+          estado: m?.estado || null,
+        };
+      }),
+      celdas,
+    });
+  } catch (error) {
+    console.error('Error matriz lote producción:', error);
+    res.status(500).json({ message: 'Error al obtener matriz de stock por lote' });
   }
 });
 

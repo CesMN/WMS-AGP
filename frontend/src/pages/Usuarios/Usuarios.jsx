@@ -7,7 +7,32 @@ import { usuariosApi } from '../../api/usuarios'
 import { useConfig } from '../../contexts/ConfigContext'
 import toast from 'react-hot-toast'
 
-const ROLES = ['Admin', 'Usuario', 'Visitante']
+const ROLES = [
+  'Administrador',
+  'Jefe Planta',
+  'Gerencia',
+  'Area Contable',
+  'Almacen',
+  'Produccion',
+  'Supervisor de Envasado',
+  'Supervisor de Congelado',
+  'Supervisor de Empaque',
+  'Camaras de Almacenamiento',
+  'Recepcion',
+  'Garita',
+  'Supervisor de Proceso',
+  'Supervisor de Calidad',
+  'Exportaciones',
+]
+
+/** Alinea valores legacy de BD con el selector (Admin → Administrador, etc.) */
+const mapRolForForm = (rol) => {
+  const r = String(rol || '').trim()
+  const legacy = { Admin: 'Administrador', Usuario: 'Recepcion', Visitante: 'Recepcion' }
+  if (legacy[r]) return legacy[r]
+  if (ROLES.includes(r)) return r
+  return 'Recepcion'
+}
 
 const Usuarios = () => {
   const { registrosPorPagina } = useConfig()
@@ -23,9 +48,13 @@ const Usuarios = () => {
     nombre: '',
     email: '',
     password: '',
-    rol: 'Usuario',
+    rol: 'Recepcion',
   })
   const [errors, setErrors] = useState({})
+  const [catalog, setCatalog] = useState([])
+  const [basePerms, setBasePerms] = useState({})
+  const [effectivePerms, setEffectivePerms] = useState({})
+  const [loadingPerms, setLoadingPerms] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -55,9 +84,10 @@ const Usuarios = () => {
 
   const openCrear = () => {
     setEditando(null)
-    setFormData({ nombre: '', email: '', password: '', rol: 'Usuario' })
+    setFormData({ nombre: '', email: '', password: '', rol: 'Recepcion' })
     setErrors({})
     setModalOpen(true)
+    loadRolePermissions('Recepcion')
   }
 
   const openEditar = (u) => {
@@ -66,16 +96,106 @@ const Usuarios = () => {
       nombre: u.nombre,
       email: u.email,
       password: '',
-      rol: u.rol,
+      rol: mapRolForForm(u.rol),
     })
     setErrors({})
     setModalOpen(true)
+    loadUserPermissions(u.id)
   }
 
   const handleChange = (e) => {
     const { name, value } = e.target
     setFormData((prev) => ({ ...prev, [name]: value }))
     if (errors[name]) setErrors((prev) => ({ ...prev, [name]: '' }))
+    if (name === 'rol') loadRolePermissions(value)
+  }
+
+  const mapRowsToState = (rows, source = 'role') => {
+    const base = {}
+    const effective = {}
+    rows.forEach((r) => {
+      const codigo = r.codigo
+      base[codigo] = {
+        view: !!(r.base_ver ?? r.puede_ver),
+        operate: !!(r.base_operar ?? r.puede_operar),
+      }
+      effective[codigo] = {
+        view: !!(source === 'user' ? r.effective_ver : (r.puede_ver ?? r.base_ver)),
+        operate: !!(source === 'user' ? r.effective_operar : (r.puede_operar ?? r.base_operar)),
+      }
+    })
+    setBasePerms(base)
+    setEffectivePerms(effective)
+  }
+
+  const loadCatalog = async () => {
+    try {
+      const { data } = await usuariosApi.obtenerCatalogoPermisos()
+      setCatalog(data?.resources || [])
+    } catch (_) {
+      setCatalog([])
+    }
+  }
+
+  const loadRolePermissions = async (rol) => {
+    try {
+      setLoadingPerms(true)
+      const { data } = await usuariosApi.obtenerPermisosRol(rol)
+      mapRowsToState(data?.resources || [], 'role')
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error cargando permisos del rol')
+      setBasePerms({})
+      setEffectivePerms({})
+    } finally {
+      setLoadingPerms(false)
+    }
+  }
+
+  const loadUserPermissions = async (userId) => {
+    try {
+      setLoadingPerms(true)
+      const { data } = await usuariosApi.obtenerPermisosUsuario(userId)
+      mapRowsToState(data?.resources || [], 'user')
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error cargando permisos del usuario')
+      setBasePerms({})
+      setEffectivePerms({})
+    } finally {
+      setLoadingPerms(false)
+    }
+  }
+
+  useEffect(() => {
+    loadCatalog()
+  }, [])
+
+  const setPerm = (codigo, key, value) => {
+    setEffectivePerms((prev) => {
+      const curr = prev[codigo] || { view: false, operate: false }
+      const next = { ...curr, [key]: value }
+      if (key === 'view' && !value) next.operate = false
+      if (key === 'operate' && value) next.view = true
+      return { ...prev, [codigo]: next }
+    })
+  }
+
+  const buildOverridesPayload = () => {
+    return Object.keys(effectivePerms).reduce((acc, codigo) => {
+      const base = basePerms[codigo] || { view: false, operate: false }
+      const eff = effectivePerms[codigo] || { view: false, operate: false }
+      const row = { codigo }
+      let changed = false
+      if (eff.view !== base.view) {
+        row.override_ver = eff.view
+        changed = true
+      }
+      if (eff.operate !== base.operate) {
+        row.override_operar = eff.operate
+        changed = true
+      }
+      if (changed) acc.push(row)
+      return acc
+    }, [])
   }
 
   const validate = () => {
@@ -98,10 +218,12 @@ const Usuarios = () => {
       if (editando) {
         const payload = { nombre: formData.nombre, email: formData.email, rol: formData.rol }
         if (formData.password) payload.password = formData.password
-        await usuariosApi.actualizar(editando.id, payload)
+        const updated = await usuariosApi.actualizar(editando.id, payload)
+        await usuariosApi.guardarOverridesUsuario(updated.data.id, { resources: buildOverridesPayload() })
         toast.success('Usuario actualizado')
       } else {
-        await usuariosApi.crear(formData)
+        const created = await usuariosApi.crear(formData)
+        await usuariosApi.guardarOverridesUsuario(created.data.id, { resources: buildOverridesPayload() })
         toast.success('Usuario creado')
       }
       setModalOpen(false)
@@ -112,6 +234,13 @@ const Usuarios = () => {
       setSaving(false)
     }
   }
+
+  const groupedResources = catalog.reduce((acc, r) => {
+    const key = r.seccion || 'General'
+    if (!acc[key]) acc[key] = []
+    acc[key].push(r)
+    return acc
+  }, {})
 
   const handleEliminar = async (u) => {
     if (!window.confirm(`¿Eliminar usuario "${u.nombre}"?`)) return
@@ -134,12 +263,12 @@ const Usuarios = () => {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <Users className="w-8 h-8 text-primary-600" />
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Usuarios</h1>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
+        <div className="flex items-center gap-3 min-w-0">
+          <Users className="w-7 h-7 sm:w-8 sm:h-8 shrink-0 text-primary-600" />
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white truncate">Usuarios</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <ExportDropdown
             getExportConfig={() => ({
               title: 'Usuarios',
@@ -200,8 +329,8 @@ const Usuarios = () => {
         )}
       </div>
 
-      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={editando ? 'Editar usuario' : 'Agregar usuario'} size="md">
-        <form onSubmit={handleSubmit} className="space-y-4">
+      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title={editando ? 'Editar usuario' : 'Agregar usuario'} size="2xl">
+        <form onSubmit={handleSubmit} className="space-y-4 max-h-[80vh] overflow-y-auto pr-1">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Nombre *</label>
             <input name="nombre" value={formData.nombre} onChange={handleChange} className={`w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white ${errors.nombre ? 'border-red-500' : 'border-gray-300'}`} />
@@ -224,6 +353,56 @@ const Usuarios = () => {
                 <option key={r} value={r}>{r}</option>
               ))}
             </select>
+          </div>
+          <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Accesos por vista (Ver / Operar)</h3>
+              {loadingPerms && <Loader2 className="w-4 h-4 animate-spin text-gray-500" />}
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Puedes habilitar solo visualización o también operaciones para cada vista.
+            </p>
+            <div className="space-y-3">
+              {Object.entries(groupedResources).map(([seccion, rows]) => (
+                <div key={seccion} className="rounded-md border border-gray-100 dark:border-gray-700">
+                  <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800/60 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-300">
+                    {seccion}
+                  </div>
+                  <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                    {rows.map((r) => {
+                      const codigo = r.codigo
+                      const eff = effectivePerms[codigo] || { view: false, operate: false }
+                      return (
+                        <div key={codigo} className="px-3 py-2 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm text-gray-900 dark:text-white">{r.nombre}</p>
+                            <p className="text-[11px] text-gray-500 dark:text-gray-400">{codigo}</p>
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                              <input
+                                type="checkbox"
+                                checked={eff.view}
+                                onChange={(e) => setPerm(codigo, 'view', e.target.checked)}
+                              />
+                              Ver
+                            </label>
+                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                              <input
+                                type="checkbox"
+                                checked={eff.operate}
+                                onChange={(e) => setPerm(codigo, 'operate', e.target.checked)}
+                              />
+                              Operar
+                            </label>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
           <div className="flex gap-3 pt-4">
             <button type="button" onClick={() => setModalOpen(false)} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">

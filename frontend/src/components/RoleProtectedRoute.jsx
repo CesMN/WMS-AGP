@@ -2,15 +2,14 @@ import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import LoadingSpinner from './LoadingSpinner'
 
-/**
- * Protege rutas por rol. Si el usuario no tiene uno de los roles permitidos, redirige al dashboard.
- * @param {React.ReactNode} children
- * @param {string[]} allowedRoles - Ej: ['Admin']. Si el usuario tiene rol 'Usuario', no puede acceder.
- */
-const RoleProtectedRoute = ({ children, allowedRoles = ['Admin'] }) => {
-  const { user, loading } = useAuth()
+const RoleProtectedRoute = ({ children, allowedRoles = null, resource = null, action = 'view' }) => {
+  const { user, loading, hasPermission } = useAuth()
   const rol = (user?.rol || '').trim()
-  const permitido = Array.isArray(allowedRoles) && allowedRoles.some((r) => String(r).toLowerCase() === rol.toLowerCase())
+  const permitidoPorRol =
+    !Array.isArray(allowedRoles) || allowedRoles.length === 0
+      ? true
+      : allowedRoles.some((r) => String(r).toLowerCase() === rol.toLowerCase())
+  const permitidoPorPermiso = resource ? hasPermission(resource, action) : true
 
   if (loading) {
     return (
@@ -20,7 +19,7 @@ const RoleProtectedRoute = ({ children, allowedRoles = ['Admin'] }) => {
     )
   }
 
-  if (!permitido) {
+  if (!permitidoPorRol || !permitidoPorPermiso) {
     return <Navigate to="/dashboard" replace />
   }
 

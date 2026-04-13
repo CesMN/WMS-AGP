@@ -34,6 +34,7 @@ const Posicion = () => {
   const [despachosRegistrados, setDespachosRegistrados] = useState([])
   const [despachoSeleccionado, setDespachoSeleccionado] = useState('')
   const [agregandoADespacho, setAgregandoADespacho] = useState(false)
+  const [productosRequeridosDespacho, setProductosRequeridosDespacho] = useState({ activa: false, codigos: new Set(), ordenProduccion: '' })
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [modalMoverVarios, setModalMoverVarios] = useState({ open: false, items: [] })
   const [moverVariosLoading, setMoverVariosLoading] = useState(false)
@@ -44,6 +45,28 @@ const Posicion = () => {
   const [posicionesMover, setPosicionesMover] = useState([])
   const [loadingDestino, setLoadingDestino] = useState(false)
   const [eliminandoVarios, setEliminandoVarios] = useState(false)
+
+  const idsEnDespacho = new Set(
+    despachosRegistrados.flatMap((d) =>
+      (d?.productos || [])
+        .map((p) => p?.stock_posicion_id)
+        .filter(Boolean)
+    )
+  )
+  const bultosEnDespachoPorStock = despachosRegistrados
+    .flatMap((d) => (d?.productos || []))
+    .filter((p) => p?.stock_posicion_id)
+    .reduce((acc, p) => {
+      const k = p.stock_posicion_id
+      acc.set(k, (acc.get(k) || 0) + (Number(p.cantidad_bultos) || 0))
+      return acc
+    }, new Map())
+  const claveGrupoStock = (item) => [
+    item?.producto_codigo || '',
+    item?.lote || '',
+    item?.referencia || '',
+    item?.fecha_ingreso ? String(item.fecha_ingreso).slice(0, 10) : '',
+  ].join('|')
 
   useEffect(() => {
     if (almacenId && carrilId && posicionId) {
@@ -275,17 +298,65 @@ const Posicion = () => {
   }
 
   useEffect(() => {
-    if (modalDespacho.open) {
+    const cargarDespachos = () => {
       despachosApi.listar({ estado: 'Registrado', limit: 100 })
         .then((r) => setDespachosRegistrados(r.data?.data ?? r.data ?? []))
         .catch(() => setDespachosRegistrados([]))
+    }
+    if (modalDespacho.open) {
       setDespachoSeleccionado('')
     }
+    cargarDespachos()
+    window.addEventListener('despachos-actualizados', cargarDespachos)
+    return () => window.removeEventListener('despachos-actualizados', cargarDespachos)
   }, [modalDespacho.open])
+
+  useEffect(() => {
+    let cancel = false
+    if (!despachoSeleccionado) {
+      setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+      return
+    }
+    despachosApi.obtenerProductosRequeridos(despachoSeleccionado)
+      .then(({ data }) => {
+        if (cancel) return
+        const codigos = new Set((data?.productos || []).map((p) => String(p.codigo || '').trim()).filter(Boolean))
+        if (!data?.activa) {
+          try {
+            localStorage.removeItem('despacho_activo_requeridos_id')
+          } catch (_) { /* noop */ }
+          setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+          return
+        }
+        setProductosRequeridosDespacho({
+          activa: true,
+          codigos,
+          ordenProduccion: String(data?.orden_produccion || '').trim(),
+        })
+        try {
+          localStorage.setItem('despacho_activo_requeridos_id', String(despachoSeleccionado))
+          window.dispatchEvent(new CustomEvent('despacho-requeridos-actualizados', { detail: { despachoId: String(despachoSeleccionado) } }))
+        } catch (_) { /* noop */ }
+      })
+      .catch(() => {
+        try {
+          localStorage.removeItem('despacho_activo_requeridos_id')
+        } catch (_) { /* noop */ }
+        if (!cancel) setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+      })
+    return () => { cancel = true }
+  }, [despachoSeleccionado])
 
   const confirmarAgregarProductoAlDespacho = async () => {
     if (!despachoSeleccionado || !modalDespacho.stockItem) return
     const item = modalDespacho.stockItem
+    if (productosRequeridosDespacho.activa) {
+      const codigo = String(item?.producto_codigo || '').trim()
+      if (!productosRequeridosDespacho.codigos.has(codigo)) {
+        toast.error(`Producto no requerido por la OP ${productosRequeridosDespacho.ordenProduccion || ''}. Solo se permiten: ${Array.from(productosRequeridosDespacho.codigos).join(', ')}`)
+        return
+      }
+    }
     try {
       setAgregandoADespacho(true)
       await despachosApi.agregarLineas(despachoSeleccionado, [{
@@ -338,59 +409,94 @@ const Posicion = () => {
   const posicion = posicionData.posicion || {}
   const stock = Array.isArray(posicionData.stock) ? posicionData.stock.filter(Boolean) : []
   const resumen = posicionData.resumen && typeof posicionData.resumen === 'object' ? posicionData.resumen : { total_bultos: 0, total_kg: 0 }
+  const stockVisual = stock.flatMap((item) => {
+    const totalB = Number(item?.cantidad_bultos) || 0
+    const despB = Number(bultosEnDespachoPorStock.get(item?.id) || 0)
+    if (despB > 0 && despB < totalB) {
+      const proporcion = totalB > 0 ? despB / totalB : 0
+      const totalKgItem = Number(item?.total_kg) || 0
+      const kgDesp = totalKgItem > 0 ? (totalKgItem * proporcion) : 0
+      const kgSaldo = Math.max(0, totalKgItem - kgDesp)
+      return [
+        {
+          ...item,
+          __rowKey: String(item.id),
+          __esDespachoParcial: true,
+          cantidad_bultos: despB,
+          total_kg: kgDesp,
+        },
+        {
+          ...item,
+          __rowKey: `${item.id}__saldo`,
+          __virtualSaldo: true,
+          cantidad_bultos: totalB - despB,
+          total_kg: kgSaldo,
+        },
+      ]
+    }
+    return [{ ...item, __rowKey: String(item.id) }]
+  })
+  const gruposConDespacho = new Set(
+    stock
+      .filter((it) => idsEnDespacho.has(it?.id))
+      .map((it) => claveGrupoStock(it))
+  )
 
   return (
-    <div>
+    <div className="min-w-0 max-w-full">
       {/* Header */}
-      <div className="flex flex-wrap items-center gap-4 mb-6">
+      <div className="flex flex-col xl:flex-row xl:flex-wrap xl:items-center gap-3 xl:gap-4 mb-5 sm:mb-6">
         <button
           type="button"
           onClick={regresar}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          className="inline-flex items-center justify-center gap-2 min-h-[44px] w-full xl:w-auto px-4 py-2.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 shrink-0"
         >
-          <ArrowLeft className="w-4 h-4" />
+          <ArrowLeft className="w-4 h-4 shrink-0" />
           Regresar
         </button>
-        <div className="flex items-center gap-3 flex-1">
-          <MapPin className="w-8 h-8 text-primary-600" />
-          <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Vista Posición</p>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <MapPin className="w-7 h-7 sm:w-8 sm:h-8 text-primary-600 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-sm text-gray-500 dark:text-gray-400">Vista posición</p>
+            <h1 className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white leading-tight">
               Almacén: <span className="text-primary-600 dark:text-primary-400">{posicion.almacen?.nombre ?? '-'}</span>{' '}
-              &gt; Carril: <span className="text-primary-600 dark:text-primary-400">Carril {posicion.carril?.numero_carril ?? '-'}</span>{' '}
-              &gt; Posición: <span className="text-primary-600 dark:text-primary-400">{posicion.nombre ?? '-'}</span>
+              <span className="text-gray-400 font-normal">&gt;</span> Carril:{' '}
+              <span className="text-primary-600 dark:text-primary-400">Carril {posicion.carril?.numero_carril ?? '-'}</span>{' '}
+              <span className="text-gray-400 font-normal">&gt;</span> Posición:{' '}
+              <span className="text-primary-600 dark:text-primary-400">{posicion.nombre ?? '-'}</span>
             </h1>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full xl:w-auto shrink-0">
           <button
             type="button"
             onClick={handleToggleBloqueo}
             disabled={togglingBloqueo}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+            className={`inline-flex items-center justify-center gap-2 min-h-[44px] flex-1 sm:flex-none px-4 py-2.5 rounded-lg font-medium transition-colors ${
               posicion.bloqueada
                 ? 'bg-amber-600 hover:bg-amber-700 text-white'
                 : 'bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-500'
             }`}
             title={posicion.bloqueada ? 'Desbloquear posición' : 'Bloquear posición (no se podrá agregar ni mover)'}
           >
-            {posicion.bloqueada ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+            {posicion.bloqueada ? <Unlock className="w-5 h-5 shrink-0" /> : <Lock className="w-5 h-5 shrink-0" />}
             {togglingBloqueo ? '...' : (posicion.bloqueada ? 'Desbloquear' : 'Bloquear')}
           </button>
           <button
+            type="button"
             onClick={handleAgregar}
             disabled={posicion.bloqueada}
-            className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center justify-center gap-2 min-h-[44px] flex-1 sm:flex-none px-4 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title={posicion.bloqueada ? 'Posición bloqueada' : undefined}
           >
-            <Plus className="w-5 h-5" />
-            Agregar Producto
+            <Plus className="w-5 h-5 shrink-0" />
+            Agregar producto
           </button>
         </div>
       </div>
 
       {/* Información de la Posición */}
-      <div className="mb-6 p-5 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-700 rounded-xl border border-gray-200 dark:border-gray-600">
+      <div className="mb-6 p-5 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-200">
             Información de la Posición
@@ -440,7 +546,7 @@ const Posicion = () => {
         <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
             <Package className="w-5 h-5" />
-            Productos en la Posición ({stock.length})
+            Productos en la Posición ({stockVisual.length})
           </h2>
           {stock.length > 0 && !posicion.bloqueada && (
             <div className="flex items-center gap-2">
@@ -453,17 +559,17 @@ const Posicion = () => {
                 type="button"
                 onClick={handleMoverVariosAbrir}
                 disabled={selectedIds.size === 0 || posicion.bloqueada}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center justify-center gap-2 min-h-[40px] sm:min-h-0 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Mover productos seleccionados a otra posición"
               >
-                <Move className="w-4 h-4" />
+                <Move className="w-4 h-4 shrink-0" />
                 Mover seleccionados
               </button>
               <button
                 type="button"
                 onClick={handleEliminarVarios}
                 disabled={selectedIds.size === 0 || eliminandoVarios}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center justify-center gap-2 min-h-[40px] sm:min-h-0 px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Eliminar productos seleccionados"
               >
                 <Trash2 className="w-4 h-4" />
@@ -480,8 +586,8 @@ const Posicion = () => {
             <p className="text-sm mt-2">Haga clic en "Agregar Producto" para comenzar.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
+          <div className="wms-table-scroll">
+            <table className="w-full min-w-[56rem]">
               <thead className="bg-gray-50 dark:bg-gray-900/50">
                 <tr>
                   {!posicion.bloqueada && (
@@ -528,17 +634,24 @@ const Posicion = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {stock.map((item, idx) => (
+                {stockVisual.map((item, idx) => (
+                  (() => {
+                    const despB = Number(bultosEnDespachoPorStock.get(item?.id) || 0)
+                    const filaVirtual = !!item.__virtualSaldo
+                    const enDespacho = !filaVirtual && despB >= (Number(item?.cantidad_bultos) || 0)
+                    const enGrupoParcial = filaVirtual || (!enDespacho && gruposConDespacho.has(claveGrupoStock(item)))
+                    return (
                   <tr
-                    key={item?.id ?? `stock-${idx}`}
-                    className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${selectedIds.has(item?.id) ? 'bg-primary-50 dark:bg-primary-900/20' : ''}`}
+                    key={item?.__rowKey ?? item?.id ?? `stock-${idx}`}
+                    className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${selectedIds.has(item?.id) ? 'bg-primary-50 dark:bg-primary-900/20' : ''} ${enDespacho ? 'bg-blue-50 dark:bg-blue-900/10' : ''} ${enGrupoParcial ? 'bg-amber-50 dark:bg-amber-900/10' : ''}`}
                   >
                     {!posicion.bloqueada && (
                       <td className="px-4 py-3 text-center w-12">
                         <input
                           type="checkbox"
-                          checked={selectedIds.has(item?.id)}
-                          onChange={() => toggleSeleccion(item?.id)}
+                          checked={!filaVirtual && selectedIds.has(item?.id)}
+                          onChange={() => !filaVirtual && toggleSeleccion(item?.id)}
+                          disabled={filaVirtual}
                           className="rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
                           onClick={(e) => e.stopPropagation()}
                         />
@@ -549,6 +662,16 @@ const Posicion = () => {
                         <div className="font-medium text-gray-900 dark:text-white">
                           {item?.producto_codigo ?? '-'}
                         </div>
+                        {enDespacho && (
+                          <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
+                            Ya agregado a despacho
+                          </div>
+                        )}
+                        {enGrupoParcial && (
+                          <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
+                            {filaVirtual ? 'Parcial (saldo pendiente)' : 'Parcial'}
+                          </div>
+                        )}
                         <div className="text-sm text-gray-500 dark:text-gray-400">
                           {item?.producto_nombre ?? '-'}
                         </div>
@@ -581,32 +704,43 @@ const Posicion = () => {
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-center gap-2">
                         <button
-                          onClick={() => handleEditar(item)}
-                          className="p-2 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
+                          type="button"
+                          onClick={() => !filaVirtual && handleEditar(item)}
+                          disabled={filaVirtual}
+                          className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-2 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
                           title="Editar"
                         >
                           <Edit className="w-4 h-4" />
                         </button>
                         <button
+                          type="button"
                           onClick={() => !posicion.bloqueada && handleMover(item)}
                           disabled={posicion.bloqueada}
-                          className="p-2 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-2 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title={posicion.bloqueada ? 'Posición bloqueada' : 'Mover'}
                         >
                           <Move className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => handleEliminar(item)}
-                          className="p-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                          type="button"
+                          onClick={() => !filaVirtual && handleEliminar(item)}
+                          disabled={filaVirtual}
+                          className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
                           title="Eliminar"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                         {!posicion.bloqueada && (
                           <button
-                            onClick={() => setModalDespacho({ open: true, stockItem: item })}
-                            className="p-2 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors"
-                            title="Agregar al despacho"
+                            type="button"
+                            onClick={() => !enDespacho && setModalDespacho({ open: true, stockItem: item })}
+                            disabled={enDespacho}
+                            className={`min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-2 rounded-lg transition-colors ${
+                              enDespacho
+                                ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/30 cursor-not-allowed'
+                                : 'text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20'
+                            }`}
+                            title={enDespacho ? 'Este producto ya fue agregado a un despacho' : 'Agregar al despacho'}
                           >
                             <Truck className="w-4 h-4" />
                           </button>
@@ -614,6 +748,8 @@ const Posicion = () => {
                       </div>
                     </td>
                   </tr>
+                    )
+                  })()
                 ))}
               </tbody>
             </table>
@@ -690,6 +826,11 @@ const Posicion = () => {
               ))}
             </select>
           </div>
+          {productosRequeridosDespacho.activa && (
+            <div className="text-xs px-2.5 py-2 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200">
+              OP {productosRequeridosDespacho.ordenProduccion || '-'}: solo codigos requeridos ({Array.from(productosRequeridosDespacho.codigos).join(', ')}).
+            </div>
+          )}
           <div className="flex gap-2 pt-2">
             <button type="button" onClick={() => setModalDespacho({ open: false, stockItem: null })} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 font-medium">Cancelar</button>
             <button type="button" onClick={confirmarAgregarProductoAlDespacho} disabled={!despachoSeleccionado || agregandoADespacho} className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg font-medium disabled:opacity-50">

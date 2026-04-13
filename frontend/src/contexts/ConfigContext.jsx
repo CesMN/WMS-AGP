@@ -77,11 +77,11 @@ export const ConfigProvider = ({ children }) => {
       const clamped = Math.min(max, Math.max(min, num))
       return `${clamped}px`
     }
-    root.style.setProperty('--font-size-base', px(CLAVES.TAMAÑO_FUENTE, 10, 24, '14px'))
-    root.style.setProperty('--font-size-titles', px(CLAVES.TAMAÑO_TITULOS, 14, 32, '20px'))
-    root.style.setProperty('--font-size-text', px(CLAVES.TAMAÑO_TEXTO, 10, 24, '14px'))
-    root.style.setProperty('--font-size-table', px(CLAVES.TAMAÑO_TABLAS, 10, 20, '13px'))
-    root.style.setProperty('--font-size-modal', px(CLAVES.TAMAÑO_MODALES, 10, 24, '14px'))
+    root.style.setProperty('--font-size-base', px(CLAVES.TAMAÑO_FUENTE, 10, 24, '13px'))
+    root.style.setProperty('--font-size-titles', px(CLAVES.TAMAÑO_TITULOS, 14, 32, '17px'))
+    root.style.setProperty('--font-size-text', px(CLAVES.TAMAÑO_TEXTO, 10, 24, '13px'))
+    root.style.setProperty('--font-size-table', px(CLAVES.TAMAÑO_TABLAS, 10, 20, '12px'))
+    root.style.setProperty('--font-size-modal', px(CLAVES.TAMAÑO_MODALES, 10, 24, '13px'))
   }, [getValor, mapByClave])
 
   const setConfigValor = useCallback(
@@ -102,11 +102,11 @@ export const ConfigProvider = ({ children }) => {
     setConfigValor,
     tema: getValor(CLAVES.TEMA) || 'claro',
     colorPrimario: getValor(CLAVES.COLOR_PRIMARIO) || '#2563eb',
-    tamañoFuente: getValor(CLAVES.TAMAÑO_FUENTE) || '14',
-    tamañoTitulos: getValor(CLAVES.TAMAÑO_TITULOS) || '20',
-    tamañoTexto: getValor(CLAVES.TAMAÑO_TEXTO) || '14',
-    tamañoTablas: getValor(CLAVES.TAMAÑO_TABLAS) || '13',
-    tamañoModales: getValor(CLAVES.TAMAÑO_MODALES) || '14',
+    tamañoFuente: getValor(CLAVES.TAMAÑO_FUENTE) || '13',
+    tamañoTitulos: getValor(CLAVES.TAMAÑO_TITULOS) || '17',
+    tamañoTexto: getValor(CLAVES.TAMAÑO_TEXTO) || '13',
+    tamañoTablas: getValor(CLAVES.TAMAÑO_TABLAS) || '12',
+    tamañoModales: getValor(CLAVES.TAMAÑO_MODALES) || '13',
     registrosPorPagina: Math.max(10, parseInt(getValor(CLAVES.REGISTROS_POR_PAGINA), 10) || 20),
     logoEmpresa: getValor(CLAVES.LOGO_EMPRESA) || '',
     tamañoLogo: Math.min(120, Math.max(24, parseInt(getValor(CLAVES.TAMAÑO_LOGO), 10) || 48)),

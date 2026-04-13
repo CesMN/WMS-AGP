@@ -3,15 +3,33 @@ import multer from 'multer';
 import xlsx from 'xlsx';
 import { pool } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.middleware.js';
+import { ensureInsumosModuleSchema } from '../utils/ensureInsumosModule.js';
 
 const router = express.Router();
 router.use(authenticateToken);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
+const ensureParihuelaColumns = async () => {
+  const cols = await pool.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'productos'`
+  );
+  const names = (cols.rows || []).map((r) => r.column_name);
+  if (!names.includes('capacidad_parihuela_bultos')) {
+    await pool.query('ALTER TABLE productos ADD COLUMN capacidad_parihuela_bultos NUMERIC(12,2)');
+  }
+  if (!names.includes('capacidad_parihuela_cajas')) {
+    await pool.query('ALTER TABLE productos ADD COLUMN capacidad_parihuela_cajas NUMERIC(12,2)');
+  }
+  if (!names.includes('unidad_parihuela')) {
+    await pool.query("ALTER TABLE productos ADD COLUMN unidad_parihuela VARCHAR(20) DEFAULT 'BULTOS'");
+  }
+};
+
 // Listar productos (con filtros, búsqueda y paginación)
 router.get('/', async (req, res) => {
   try {
+    await ensureParihuelaColumns();
     const { cliente_id, especie_id, q, limit = 50, offset = 0 } = req.query;
     const limitNum = Math.min(parseInt(limit, 10) || 50, 500);
     const offsetNum = Math.max(0, parseInt(offset, 10) || 0);
@@ -43,7 +61,9 @@ router.get('/', async (req, res) => {
     const total = parseInt(countResult.rows[0]?.total, 10) || 0;
 
     const query = `
-      SELECT p.id, p.codigo, p.cliente_id, p.especie_id, p.producto, p.descripcion, p.presentacion, p.formato, p.unidad_medida, p.activo, p.created_at,
+      SELECT p.id, p.codigo, p.cliente_id, p.especie_id, p.producto, p.descripcion, p.presentacion, p.formato, p.unidad_medida,
+             p.capacidad_parihuela_bultos, p.capacidad_parihuela_cajas, p.unidad_parihuela,
+             p.activo, p.created_at,
              c.nombre AS cliente_nombre,
              e.nombre AS especie_nombre
       FROM productos p
@@ -248,12 +268,102 @@ router.post('/import/confirm', async (req, res) => {
   }
 });
 
+// Receta de insumos por producto (cantidad de insumo por bulto; la unidad es la del insumo)
+router.get('/:id/insumos', async (req, res) => {
+  try {
+    await ensureInsumosModuleSchema();
+    const { id } = req.params;
+    const prod = await pool.query('SELECT id FROM productos WHERE id = $1 AND activo = TRUE', [id]);
+    if (prod.rows.length === 0) return res.status(404).json({ message: 'Producto no encontrado' });
+    const result = await pool.query(
+      `SELECT pi.insumo_id, COALESCE(pi.cantidad_por_bulto, 0) AS cantidad_por_bulto,
+              i.nombre AS insumo_nombre, i.unidad_medida AS insumo_unidad, i.codigo AS insumo_codigo
+       FROM producto_insumo pi
+       JOIN insumos i ON i.id = pi.insumo_id AND COALESCE(i.activo, TRUE) = TRUE
+       WHERE pi.producto_id = $1
+       ORDER BY i.nombre`,
+      [id]
+    );
+    res.json({ items: result.rows });
+  } catch (error) {
+    console.error('Error listando insumos del producto:', error);
+    res.status(500).json({ message: 'Error al listar insumos del producto' });
+  }
+});
+
+router.put('/:id/insumos', async (req, res) => {
+  try {
+    await ensureInsumosModuleSchema();
+    const { id } = req.params;
+    const { items } = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ message: 'items debe ser un array' });
+    }
+    const prod = await pool.query('SELECT id FROM productos WHERE id = $1 AND activo = TRUE', [id]);
+    if (prod.rows.length === 0) return res.status(404).json({ message: 'Producto no encontrado' });
+    const client = await pool.connect();
+    try {
+      const fmtRow = await client.query('SELECT formato FROM productos WHERE id = $1', [id]);
+      const formatoProd = Number(fmtRow.rows[0]?.formato) || 0;
+      const colMeta = await client.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'producto_insumo'`
+      );
+      const piCols = new Set(colMeta.rows.map((r) => r.column_name));
+      const tieneKgLegacy = piCols.has('cantidad_por_kg_producto');
+
+      await client.query('BEGIN');
+      await client.query('DELETE FROM producto_insumo WHERE producto_id = $1', [id]);
+      for (const it of items) {
+        if (!it.insumo_id) continue;
+        let c = Number(it.cantidad_por_bulto);
+        if (Number.isNaN(c) && it.cantidad_por_kg_producto != null) {
+          const perKg = Number(it.cantidad_por_kg_producto);
+          if (!Number.isNaN(perKg) && formatoProd > 0) c = perKg * formatoProd;
+        }
+        if (Number.isNaN(c) || c < 0) continue;
+        const kgLegacy =
+          tieneKgLegacy && formatoProd > 0 ? c / formatoProd : tieneKgLegacy ? 0 : null;
+        if (tieneKgLegacy) {
+          await client.query(
+            `INSERT INTO producto_insumo (producto_id, insumo_id, cantidad_por_bulto, cantidad_por_kg_producto)
+             VALUES ($1, $2, $3, $4)`,
+            [id, it.insumo_id, c, kgLegacy]
+          );
+        } else {
+          await client.query(
+            'INSERT INTO producto_insumo (producto_id, insumo_id, cantidad_por_bulto) VALUES ($1, $2, $3)',
+            [id, it.insumo_id, c]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+    const result = await pool.query(
+      `SELECT pi.insumo_id, pi.cantidad_por_bulto, i.nombre AS insumo_nombre, i.unidad_medida AS insumo_unidad, i.codigo AS insumo_codigo
+       FROM producto_insumo pi
+       JOIN insumos i ON i.id = pi.insumo_id
+       WHERE pi.producto_id = $1 ORDER BY i.nombre`,
+      [id]
+    );
+    res.json({ items: result.rows });
+  } catch (error) {
+    console.error('Error guardando insumos del producto:', error);
+    res.status(500).json({ message: 'Error al guardar insumos del producto' });
+  }
+});
+
 // Obtener un producto por ID
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
-      `SELECT p.id, p.codigo, p.cliente_id, p.especie_id, p.producto, p.descripcion, p.presentacion, p.formato, p.unidad_medida
+      `SELECT p.id, p.codigo, p.cliente_id, p.especie_id, p.producto, p.descripcion, p.presentacion, p.formato, p.unidad_medida,
+              p.capacidad_parihuela_bultos, p.capacidad_parihuela_cajas, p.unidad_parihuela
        FROM productos p WHERE p.id = $1 AND p.activo = TRUE`,
       [id]
     );
@@ -272,7 +382,8 @@ router.get('/:id', async (req, res) => {
 // Crear producto
 router.post('/', async (req, res) => {
   try {
-    const { codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida } = req.body;
+    await ensureParihuelaColumns();
+    const { codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida, capacidad_parihuela_bultos, capacidad_parihuela_cajas, unidad_parihuela } = req.body;
     if (!codigo || !cliente_id || !especie_id || !producto || !descripcion || formato === undefined || !unidad_medida) {
       return res.status(400).json({ message: 'Faltan campos requeridos' });
     }
@@ -296,11 +407,12 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Ya existe un producto con ese código' });
     }
 
+    const unidadParihuelaVal = unidad_parihuela === 'CAJAS' ? 'CAJAS' : 'BULTOS';
     const result = await pool.query(
-      `INSERT INTO productos (codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id, codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida, activo, created_at`,
-      [codigo.trim(), cliente_id, especie_id, producto.trim(), descripcion.trim(), presentacion ? presentacion.trim() : null, Number(formato), unidad_medida]
+      `INSERT INTO productos (codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida, capacidad_parihuela_bultos, capacidad_parihuela_cajas, unidad_parihuela)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING id, codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida, capacidad_parihuela_bultos, capacidad_parihuela_cajas, unidad_parihuela, activo, created_at`,
+      [codigo.trim(), cliente_id, especie_id, producto.trim(), descripcion.trim(), presentacion ? presentacion.trim() : null, Number(formato), unidad_medida, capacidad_parihuela_bultos != null ? Number(capacidad_parihuela_bultos) : null, capacidad_parihuela_cajas != null ? Number(capacidad_parihuela_cajas) : null, unidadParihuelaVal]
     );
     const row = result.rows[0];
     const clienteResult = await pool.query('SELECT nombre FROM clientes WHERE id = $1', [row.cliente_id]);
@@ -317,8 +429,9 @@ router.post('/', async (req, res) => {
 // Actualizar producto
 router.put('/:id', async (req, res) => {
   try {
+    await ensureParihuelaColumns();
     const { id } = req.params;
-    const { codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida } = req.body;
+    const { codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida, capacidad_parihuela_bultos, capacidad_parihuela_cajas, unidad_parihuela } = req.body;
     if (!codigo || !cliente_id || !especie_id || !producto || !descripcion || formato === undefined || !unidad_medida) {
       return res.status(400).json({ message: 'Faltan campos requeridos' });
     }
@@ -344,10 +457,12 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ message: 'Ya existe otro producto con ese código' });
     }
 
+    const unidadParihuelaVal = unidad_parihuela === 'CAJAS' ? 'CAJAS' : (unidad_parihuela || 'BULTOS');
     const result = await pool.query(
-      `UPDATE productos SET codigo = $1, cliente_id = $2, especie_id = $3, producto = $4, descripcion = $5, presentacion = $6, formato = $7, unidad_medida = $8, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $9 RETURNING id, codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida, activo`,
-      [codigo.trim(), cliente_id, especie_id, producto.trim(), descripcion.trim(), presentacion ? presentacion.trim() : null, Number(formato), unidad_medida, id]
+      `UPDATE productos SET codigo = $1, cliente_id = $2, especie_id = $3, producto = $4, descripcion = $5, presentacion = $6, formato = $7, unidad_medida = $8,
+        capacidad_parihuela_bultos = $9, capacidad_parihuela_cajas = $10, unidad_parihuela = $11, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $12 RETURNING id, codigo, cliente_id, especie_id, producto, descripcion, presentacion, formato, unidad_medida, capacidad_parihuela_bultos, capacidad_parihuela_cajas, unidad_parihuela, activo`,
+      [codigo.trim(), cliente_id, especie_id, producto.trim(), descripcion.trim(), presentacion ? presentacion.trim() : null, Number(formato), unidad_medida, capacidad_parihuela_bultos != null ? Number(capacidad_parihuela_bultos) : null, capacidad_parihuela_cajas != null ? Number(capacidad_parihuela_cajas) : null, unidadParihuelaVal, id]
     );
     const row = result.rows[0];
     const clienteResult = await pool.query('SELECT nombre FROM clientes WHERE id = $1', [row.cliente_id]);

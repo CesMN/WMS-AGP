@@ -9,29 +9,86 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   font-size: var(--font-size-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background-color: #f8fafc;
+  text-size-adjust: 100%;
+}
+
+/* Reduce delay táctil en enlaces/botones (móvil) */
+.wms-app-content a[href],
+.wms-app-content button:not(:disabled),
+.wms-modal a[href],
+.wms-modal button:not(:disabled) {
+  touch-action: manipulation;
+}
+
+.dark body {
+  background-color: #0f172a;
 }
 
 :root {
   --color-primary: #2563eb;
-  /* Tamaños de fuente (se sobrescriben desde Configuración) */
-  --font-size-base: 14px;
-  --font-size-titles: 20px;
-  --font-size-text: 14px;
-  --font-size-table: 13px;
-  --font-size-modal: 14px;
+  --font-size-base: 13px;
+  --font-size-titles: 17px;
+  --font-size-text: 13px;
+  --font-size-table: 12px;
+  --font-size-modal: 13px;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* Escalado suave en tablet: mejor legibilidad sin romper escritorio */
+@media (min-width: 768px) and (max-width: 1279px) {
+  :root {
+    --font-size-text: 14px;
+    --font-size-titles: 18px;
+    --font-size-table: 13px;
+  }
+}
+
+
+/* iOS / notch: barra superior y contenido */
+.safe-area-pt {
+  padding-top: max(0.25rem, env(safe-area-inset-top));
+}
+
+.wms-main-safe {
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+/* Tablas anchas: scroll táctil (el borde suele venir del card contenedor) */
+.wms-table-scroll {
+  -webkit-overflow-scrolling: touch;
+  overflow-x: auto;
+}
+.wms-table-scroll table {
+  min-width: min(640px, 100%);
 }
 
 #root {
   min-height: 100vh;
 }
 
-/* Transición suave en overlay del modal */
+/* Cards estilo referencia: bordes suaves, sombra ligera */
+.wms-card {
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  box-shadow: var(--shadow-card);
+  border-radius: 1rem;
+}
+.wms-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+.dark .wms-card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.dark .wms-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
 .wms-modal-backdrop {
   animation: wms-fade-in 0.15s ease-out;
 }
@@ -40,18 +97,6 @@ body {
   to { opacity: 1; }
 }
 
-/* Card hover consistente (opcional: añadir clase .wms-card en contenedores) */
-.wms-card {
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
-}
-.wms-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-}
-.dark .wms-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
-
-/* Accesibilidad: focus visible para teclado */
 .wms-app-content button:focus-visible,
 .wms-app-content a:focus-visible,
 .wms-app-content input:focus-visible,
@@ -67,12 +112,10 @@ body {
   outline-offset: 2px;
 }
 
-/* Contenido principal: texto general */
 .wms-app-content {
   font-size: var(--font-size-text);
 }
 
-/* Títulos (h1, h2, h3 y clases de Tailwind para títulos) */
 .wms-app-content .text-3xl,
 .wms-app-content .text-2xl,
 .wms-app-content .text-xl,
@@ -82,7 +125,6 @@ body {
   font-size: var(--font-size-titles) !important;
 }
 
-/* Texto pequeño (labels, hints) mantiene proporción */
 .wms-app-content .text-sm {
   font-size: calc(var(--font-size-text) * 0.875) !important;
 }
@@ -90,13 +132,19 @@ body {
   font-size: calc(var(--font-size-text) * 0.75) !important;
 }
 
-/* Tablas */
 .wms-app-content table,
 .wms-app-content .overflow-x-auto table {
   font-size: var(--font-size-table) !important;
 }
 
-/* Ventanas modales */
+/* Modo oscuro: <th> con text-gray-500/600 suelen quedar ilegibles */
+.dark .wms-app-content thead th.text-gray-500,
+.dark .wms-app-content thead th.text-gray-600,
+.dark .wms-modal thead th.text-gray-500,
+.dark .wms-modal thead th.text-gray-600 {
+  color: #e2e8f0 !important;
+}
+
 .wms-modal {
   font-size: var(--font-size-modal) !important;
 }
@@ -108,7 +156,6 @@ body {
   font-size: calc(var(--font-size-modal) * 0.93) !important;
 }
 
-/* Color primario aplicado a iconos y acentos en vistas */
 .wms-app-content .text-primary-600,
 .wms-app-content .text-primary-400,
 .wms-app-content .text-primary-700,

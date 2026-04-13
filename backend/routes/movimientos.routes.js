@@ -137,26 +137,32 @@ router.get('/ingresos-agrupados', async (req, res) => {
       filtrosIdx++;
     }
 
+    /** Sin número de guía: un solo grupo (no una tarjeta por movimiento). Valor interno improbable como guía real. */
+    const SIN_GUIA_GRUPO = '__WMS_SIN_NUMERO_GUIA__';
+
     const runWithNumeroGuia = async () => {
       const countResult = await pool.query(
-        `SELECT COUNT(DISTINCT COALESCE(m.numero_guia, m.id::text)) AS total FROM movimientos m WHERE ${filtrosWhere}`,
-        filtrosParams
+        `SELECT COUNT(*)::INT AS total FROM (
+           SELECT 1 FROM movimientos m WHERE ${filtrosWhere}
+           GROUP BY COALESCE(NULLIF(TRIM(COALESCE(m.numero_guia, '')), ''), $${filtrosIdx})
+         ) sub`,
+        [...filtrosParams, SIN_GUIA_GRUPO]
       );
       const total = parseInt(countResult.rows[0]?.total, 10) || 0;
-      const paramsGrupos = [...filtrosParams, limitNum, offsetNum];
+      const paramsGrupos = [...filtrosParams, SIN_GUIA_GRUPO, limitNum, offsetNum];
       const result = await pool.query(
         `WITH grupos AS (
-          SELECT COALESCE(m.numero_guia, m.id::text) AS grupo_id,
-                 COALESCE(NULLIF(TRIM(COALESCE(m.numero_guia, '')::text), ''), 'Sin guía') AS numero_guia,
-                 MIN(m.fecha_hora) AS fecha_hora, (array_agg(DISTINCT u.nombre))[1] AS usuario_nombre,
+          SELECT COALESCE(NULLIF(TRIM(COALESCE(m.numero_guia, '')), ''), $${filtrosIdx}) AS grupo_id,
+                 COALESCE(NULLIF(TRIM(COALESCE(m.numero_guia, '')), ''), 'Sin guía') AS numero_guia,
+                 MAX(m.fecha_hora) AS fecha_hora, MIN(u.nombre) AS usuario_nombre,
                  array_agg(DISTINCT m.id) AS movimiento_ids
           FROM movimientos m JOIN usuarios u ON u.id = m.usuario_id
           WHERE ${filtrosWhere}
-          GROUP BY COALESCE(m.numero_guia, m.id::text), COALESCE(NULLIF(TRIM(COALESCE(m.numero_guia, '')::text), ''), 'Sin guía')
+          GROUP BY 1, 2
         ),
         agregados AS (
           SELECT g.grupo_id, g.numero_guia, g.fecha_hora, g.usuario_nombre, g.movimiento_ids,
-                 COALESCE(SUM(md.cantidad_bultos), 0)::INTEGER AS total_bultos,
+                 COALESCE(SUM(md.cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
                  COALESCE(SUM(md.total_kg), 0)::NUMERIC(12,2) AS total_kg,
                  COALESCE(SUM(md.peso_adicional), 0)::NUMERIC(12,2) AS total_peso_adicional,
                  COUNT(DISTINCT md.producto_id) AS cantidad_productos,
@@ -170,7 +176,7 @@ router.get('/ingresos-agrupados', async (req, res) => {
           LEFT JOIN stock_posiciones sp ON sp.id = md.stock_posicion_id
           GROUP BY g.grupo_id, g.numero_guia, g.fecha_hora, g.usuario_nombre, g.movimiento_ids
         )
-        SELECT * FROM agregados ORDER BY fecha_hora DESC LIMIT $${filtrosIdx} OFFSET $${filtrosIdx + 1}`,
+        SELECT * FROM agregados ORDER BY fecha_hora DESC LIMIT $${filtrosIdx + 1} OFFSET $${filtrosIdx + 2}`,
         paramsGrupos
       );
       return { rows: result.rows, total };
@@ -192,7 +198,7 @@ router.get('/ingresos-agrupados', async (req, res) => {
         ),
         agregados AS (
           SELECT g.grupo_id, g.numero_guia, g.fecha_hora, g.usuario_nombre, g.movimiento_ids,
-                 COALESCE(SUM(md.cantidad_bultos), 0)::INTEGER AS total_bultos,
+                 COALESCE(SUM(md.cantidad_bultos), 0)::NUMERIC(14, 2) AS total_bultos,
                  COALESCE(SUM(md.total_kg), 0)::NUMERIC(12,2) AS total_kg,
                  COALESCE(SUM(md.peso_adicional), 0)::NUMERIC(12,2) AS total_peso_adicional,
                  COUNT(DISTINCT md.producto_id) AS cantidad_productos,
@@ -318,7 +324,7 @@ router.get('/salidas-agrupadas', async (req, res) => {
       LEFT JOIN clientes c_origen ON c_origen.id = d.cliente_origen_id
       LEFT JOIN (
         SELECT md.movimiento_id,
-               SUM(md.cantidad_bultos)::INTEGER AS total_bultos,
+               SUM(md.cantidad_bultos)::NUMERIC(14, 2) AS total_bultos,
                SUM(md.total_kg)::NUMERIC(12,2) AS total_kg,
                COALESCE(SUM(md.peso_adicional), 0)::NUMERIC(12,2) AS total_peso_adicional,
                COUNT(DISTINCT md.producto_id) AS cantidad_productos
@@ -432,10 +438,17 @@ router.get('/:id', async (req, res) => {
         n.numero_nivel,
         pos.numero_posicion,
         pos.nombre AS posicion_nombre,
-        sp.lote AS lote
+        sp.lote AS lote,
+        sp.referencia AS stock_referencia,
+        sp.fecha_ingreso AS stock_fecha_ingreso,
+        rec.proveedor AS recepcion_proveedor,
+        rec.guia_remision AS recepcion_guia,
+        rec.fecha AS recepcion_fecha
        FROM movimiento_detalles md
        JOIN productos p ON p.id = md.producto_id
        LEFT JOIN stock_posiciones sp ON sp.id = md.stock_posicion_id
+       LEFT JOIN lotes l ON l.id = sp.lote_id
+       LEFT JOIN recepciones rec ON rec.id = l.recepcion_id
        LEFT JOIN clientes cli ON cli.id = p.cliente_id
        LEFT JOIN especies e ON e.id = p.especie_id
        LEFT JOIN almacenes a ON a.id = md.almacen_id
@@ -467,9 +480,15 @@ router.get('/:id', async (req, res) => {
       posicion_nombre: d.posicion_nombre,
       cliente_nombre: d.cliente_nombre || null,
       especie_nombre: d.especie_nombre || null,
+      stock_referencia: d.stock_referencia != null ? String(d.stock_referencia).trim() : null,
+      stock_fecha_ingreso: d.stock_fecha_ingreso || null,
+      recepcion_proveedor: d.recepcion_proveedor || null,
+      recepcion_guia: d.recepcion_guia || null,
+      recepcion_fecha: d.recepcion_fecha || null,
     }));
 
     const firstDetalle = detalleResult.rows[0];
+    const provRecep = detalleResult.rows.find((r) => r.recepcion_proveedor)?.recepcion_proveedor || null;
     res.json({
       ...movimiento,
       motivo: movimiento.motivo,
@@ -478,6 +497,9 @@ router.get('/:id', async (req, res) => {
       cliente_origen_nombre: movimiento.cliente_origen_nombre || null,
       cliente_ingreso: movimiento.tipo_movimiento === 'Ingreso' && firstDetalle ? (firstDetalle.cliente_nombre || null) : null,
       especie_ingreso: movimiento.tipo_movimiento === 'Ingreso' && firstDetalle ? (firstDetalle.especie_nombre || null) : null,
+      proveedor_recepcion: movimiento.tipo_movimiento === 'Ingreso' ? provRecep : null,
+      guia_recepcion: movimiento.tipo_movimiento === 'Ingreso' ? (detalleResult.rows.find((r) => r.recepcion_guia)?.recepcion_guia || null) : null,
+      fecha_recepcion: movimiento.tipo_movimiento === 'Ingreso' ? (detalleResult.rows.find((r) => r.recepcion_fecha)?.recepcion_fecha || null) : null,
       detalles,
     });
   } catch (error) {

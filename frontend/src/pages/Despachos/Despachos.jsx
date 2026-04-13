@@ -25,13 +25,13 @@ const TIPOS_SALIDA = [
 ]
 
 const CAMPOS_POR_TIPO = {
-  Embarque: ['cliente_origen_id', 'fecha_salida', 'orden_produccion', 'cliente_destino', 'pais_destino', 'contenedor', 'guia_salida', 'observaciones'],
-  'Venta Local': ['cliente_origen_id', 'fecha_salida', 'destino', 'contenedor', 'guia_salida', 'observaciones'],
-  Reempaque: ['cliente_origen_id', 'guia_salida', 'observaciones'],
-  Reproceso: ['cliente_origen_id', 'guia_salida', 'observaciones'],
-  Etiquetado: ['cliente_origen_id', 'guia_salida', 'observaciones'],
-  Muestreo: ['cliente_origen_id', 'guia_salida', 'observaciones'],
-  Otros: ['cliente_origen_id', 'fecha_salida', 'guia_salida', 'observaciones'],
+  Embarque: ['cliente_origen_id', 'fecha_salida', 'orden_produccion', 'cliente_destino', 'pais_destino', 'contenedor', 'observaciones'],
+  'Venta Local': ['cliente_origen_id', 'fecha_salida', 'destino', 'contenedor', 'observaciones'],
+  Reempaque: ['cliente_origen_id', 'observaciones'],
+  Reproceso: ['cliente_origen_id', 'observaciones'],
+  Etiquetado: ['cliente_origen_id', 'observaciones'],
+  Muestreo: ['cliente_origen_id', 'observaciones'],
+  Otros: ['cliente_origen_id', 'fecha_salida', 'observaciones'],
 }
 
 const ETIQUETAS = {
@@ -47,7 +47,7 @@ const ETIQUETAS = {
 }
 
 const Despachos = () => {
-  const { user } = useAuth()
+  const { canOperate } = useAuth()
   const { registrosPorPagina } = useConfig()
   const location = useLocation()
   const navigate = useNavigate()
@@ -73,6 +73,13 @@ const Despachos = () => {
   const [saving, setSaving] = useState(false)
   const [cambiandoEstado, setCambiandoEstado] = useState(null)
   const [reabriendo, setReabriendo] = useState(null)
+  const [modalFinalizar, setModalFinalizar] = useState(null)
+  const [requeridosDespacho, setRequeridosDespacho] = useState({ activa: false, map: new Map(), ordenProduccion: '' })
+  const [finalizarForm, setFinalizarForm] = useState({
+    contenedor: '',
+    guia_salida: '',
+    fecha_salida: '',
+  })
 
   const [refreshKey, setRefreshKey] = useState(0)
   const [tipoSalida, setTipoSalida] = useState('Embarque')
@@ -90,6 +97,7 @@ const Despachos = () => {
   const [stockLineas, setStockLineas] = useState([])
   const [filtroStockCliente, setFiltroStockCliente] = useState('')
   const [filtroStockEspecie, setFiltroStockEspecie] = useState('')
+  const [filtroStockLote, setFiltroStockLote] = useState('')
   const [filtroStockAlmacen, setFiltroStockAlmacen] = useState('')
   const [filtroStockCarril, setFiltroStockCarril] = useState('')
   const [almacenesList, setAlmacenesList] = useState([])
@@ -103,6 +111,7 @@ const Despachos = () => {
   const [quitarLineaLoading, setQuitarLineaLoading] = useState(null)
   const [lineasEdit, setLineasEdit] = useState({})
   const [guardandoCambios, setGuardandoCambios] = useState(false)
+  const [bloquearTipoSalida, setBloquearTipoSalida] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -166,6 +175,30 @@ const Despachos = () => {
   }, [modalDetalle])
 
   useEffect(() => {
+    let cancel = false
+    if (!modalDetalle) {
+      setRequeridosDespacho({ activa: false, map: new Map(), ordenProduccion: '' })
+      return
+    }
+    despachosApi.obtenerProductosRequeridos(modalDetalle)
+      .then(({ data }) => {
+        if (cancel) return
+        const map = new Map(
+          (data?.productos || []).map((p) => [String(p.codigo || '').trim(), Number(p.requerido_bultos) || 0])
+        )
+        setRequeridosDespacho({
+          activa: !!data?.activa,
+          map,
+          ordenProduccion: String(data?.orden_produccion || '').trim(),
+        })
+      })
+      .catch(() => {
+        if (!cancel) setRequeridosDespacho({ activa: false, map: new Map(), ordenProduccion: '' })
+      })
+    return () => { cancel = true }
+  }, [modalDetalle])
+
+  useEffect(() => {
     const id = location.state?.openDespachoId
     if (id) {
       setModalDetalle(id)
@@ -207,44 +240,48 @@ const Despachos = () => {
     if (modalForm) {
       cargaStockLineas()
     }
-  }, [modalForm, filtroStockCliente, filtroStockEspecie, filtroStockAlmacen, filtroStockCarril, busquedaStock])
+  }, [modalForm, filtroStockCliente, filtroStockEspecie, filtroStockLote, filtroStockAlmacen, filtroStockCarril, busquedaStock])
 
   useEffect(() => {
     if (agregarADespachoId) {
       const params = {}
       if (filtroStockCliente) params.cliente_id = filtroStockCliente
       if (filtroStockEspecie) params.especie_id = filtroStockEspecie
+      if (filtroStockLote?.trim()) params.lote = filtroStockLote.trim()
       if (filtroStockAlmacen) params.almacen_id = filtroStockAlmacen
       if (filtroStockCarril) params.carril_id = filtroStockCarril
       if (busquedaStock?.trim()) params.q = busquedaStock.trim()
       stockApi.lineas(params).then((r) => setStockParaAgregar(r.data || [])).catch(() => setStockParaAgregar([]))
       setSeleccionadosAgregar({})
     }
-  }, [agregarADespachoId, filtroStockCliente, filtroStockEspecie, filtroStockAlmacen, filtroStockCarril, busquedaStock])
+  }, [agregarADespachoId, filtroStockCliente, filtroStockEspecie, filtroStockLote, filtroStockAlmacen, filtroStockCarril, busquedaStock])
 
   const cargaStockLineas = () => {
     const params = {}
     if (filtroStockCliente) params.cliente_id = filtroStockCliente
     if (filtroStockEspecie) params.especie_id = filtroStockEspecie
+    if (filtroStockLote?.trim()) params.lote = filtroStockLote.trim()
     if (filtroStockAlmacen) params.almacen_id = filtroStockAlmacen
     if (filtroStockCarril) params.carril_id = filtroStockCarril
     if (busquedaStock?.trim()) params.q = busquedaStock.trim()
     stockApi.lineas(params).then((r) => setStockLineas(r.data)).catch(() => setStockLineas([]))
   }
 
-  const abrirCrear = () => {
+  const abrirCrear = (prefill = null) => {
+    const baseFecha = new Date().toISOString().slice(0, 10)
     setEditId(null)
     setTipoSalida('Embarque')
+    setBloquearTipoSalida(!!prefill)
     setForm({
       cliente_origen_id: '',
-      fecha_salida: new Date().toISOString().slice(0, 10),
-      orden_produccion: '',
-      cliente_destino: '',
-      pais_destino: '',
-      destino: '',
-      contenedor: '',
+      fecha_salida: prefill?.fecha_salida || baseFecha,
+      orden_produccion: prefill?.orden_produccion || '',
+      cliente_destino: prefill?.cliente_destino || '',
+      pais_destino: prefill?.pais_destino || '',
+      destino: prefill?.destino || '',
+      contenedor: prefill?.contenedor || '',
       guia_salida: '',
-      observaciones: '',
+      observaciones: prefill?.observaciones || '',
     })
     setLineasDespacho([])
     setSeleccionados({})
@@ -254,6 +291,7 @@ const Despachos = () => {
   const abrirEditar = async (id) => {
     const d = await despachosApi.obtener(id).then((r) => r.data)
     setEditId(id)
+    setBloquearTipoSalida(false)
     setTipoSalida(d.tipo_salida)
     setForm({
       cliente_origen_id: d.cliente_origen_id || '',
@@ -284,6 +322,26 @@ const Despachos = () => {
     setSeleccionados({})
     setModalForm(true)
   }
+
+  useEffect(() => {
+    const qs = new URLSearchParams(location.search || '')
+    const referencia = (qs.get('referencia') || '').trim()
+    const op = (qs.get('op') || '').trim()
+    const fechaProbable = (qs.get('fecha_probable_embarque') || '').trim()
+    const clienteDestino = (qs.get('cliente_destino') || '').trim()
+    const destino = (qs.get('destino') || '').trim()
+    const clienteOrigenNombre = (qs.get('cliente_origen_nombre') || '').trim()
+    if (!referencia && !op && !fechaProbable && !clienteDestino && !destino) return
+    abrirCrear({
+      fecha_salida: fechaProbable || new Date().toISOString().slice(0, 10),
+      orden_produccion: op,
+      cliente_destino: clienteDestino,
+      destino,
+      contenedor: referencia,
+      observaciones: clienteOrigenNombre ? `Cliente origen (referencia): ${clienteOrigenNombre}` : '',
+    })
+    navigate(location.pathname, { replace: true })
+  }, [location.search])
 
   const agregarSeleccionados = () => {
     const ids = Object.keys(seleccionados).filter((id) => seleccionados[id])
@@ -378,13 +436,56 @@ const Despachos = () => {
     }
   }
 
-  const marcarDespachado = async (id) => {
-    if (!window.confirm('Al marcar como Despachado se descontará el stock. ¿Continuar?')) return
+  const abrirModalFinalizar = (id, fechaSalidaRegistro) => {
+    const f = fechaSalidaRegistro ? String(fechaSalidaRegistro).slice(0, 10) : new Date().toISOString().slice(0, 10)
+    setModalFinalizar({ id })
+    setFinalizarForm({ contenedor: '', guia_salida: '', fecha_salida: f })
+  }
+
+  const cerrarModalFinalizar = () => {
+    setModalFinalizar(null)
+    setFinalizarForm({ contenedor: '', guia_salida: '', fecha_salida: '' })
+  }
+
+  const ejecutarFinalizarDespacho = async () => {
+    if (!modalFinalizar?.id) return
+    const id = modalFinalizar.id
+    const contenedorTrim = String(finalizarForm.contenedor || '').trim()
+    const guiaTrim = String(finalizarForm.guia_salida || '').trim()
+    const fechaTrim = String(finalizarForm.fecha_salida || '').trim().slice(0, 10)
+    if (!contenedorTrim) {
+      toast.error('El número de contenedor es obligatorio para finalizar')
+      return
+    }
+    if (!guiaTrim) {
+      toast.error('La guía de salida es obligatoria para finalizar')
+      return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaTrim)) {
+      toast.error('Indique una fecha de salida válida')
+      return
+    }
+    if (excedidosRequerido.length > 0) {
+      toast.error(`No se puede finalizar. Exceso por producto: ${excedidosRequerido.map((x) => `${x.codigo} (${x.enviado} > ${x.requerido})`).join(', ')}`)
+      return
+    }
     try {
       setCambiandoEstado(id)
-      await despachosApi.cambiarEstado(id, 'Despachado')
+      await despachosApi.cambiarEstado(id, 'Despachado', {
+        guia_salida: guiaTrim,
+        contenedor: contenedorTrim,
+        fecha_salida: fechaTrim,
+      })
       toast.success('Los datos fueron registrados exitosamente')
+      cerrarModalFinalizar()
       setRefreshKey((k) => k + 1)
+      try {
+        const stored = localStorage.getItem('despacho_activo_requeridos_id')
+        if (stored && String(stored) === String(id)) {
+          localStorage.removeItem('despacho_activo_requeridos_id')
+        }
+      } catch (_) { /* noop */ }
+      window.dispatchEvent(new CustomEvent('despacho-requeridos-actualizados', { detail: { despachoId: '' } }))
       if (modalDetalle === id) {
         recargarDetalle()
         setModalDetalle(null)
@@ -407,6 +508,7 @@ const Despachos = () => {
         recargarDetalle()
       }
       window.dispatchEvent(new CustomEvent('despachos-actualizados'))
+      window.dispatchEvent(new CustomEvent('despacho-requeridos-actualizados', { detail: { despachoId: String(id) } }))
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al reabrir')
     } finally {
@@ -500,6 +602,21 @@ const Despachos = () => {
     return origB !== editB || Math.abs(origA - editA) > 0.001
   })
 
+  const excedidosRequerido = (() => {
+    if (!requeridosDespacho.activa || !(detalle?.lineas || []).length) return []
+    const acumulado = new Map()
+    for (const l of (detalle?.lineas || [])) {
+      const codigo = String(l.producto_codigo || '').trim()
+      if (!codigo) continue
+      const edit = lineasEdit[l.id]
+      const bultos = edit != null ? (parseInt(edit.cantidad_bultos, 10) || 0) : (Number(l.cantidad_bultos) || 0)
+      acumulado.set(codigo, (acumulado.get(codigo) || 0) + bultos)
+    }
+    return Array.from(acumulado.entries())
+      .map(([codigo, enviado]) => ({ codigo, enviado, requerido: Number(requeridosDespacho.map.get(codigo) || 0) }))
+      .filter((x) => x.enviado > x.requerido + 1e-6)
+  })()
+
   const confirmarAgregarProductos = async () => {
     if (!agregarADespachoId) return
     const ids = Object.keys(seleccionadosAgregar).filter((id) => seleccionadosAgregar[id])
@@ -573,16 +690,17 @@ const Despachos = () => {
     .filter(Boolean)
 
   return (
-    <div>
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-3">
-          <Truck className="w-8 h-8 text-primary-600" />
-          <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Salidas</p>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Despachos</h1>
+    <div className="min-w-0 max-w-full">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-5 sm:mb-6">
+        <div className="flex items-start gap-3 min-w-0">
+          <Truck className="w-7 h-7 sm:w-8 sm:h-8 text-primary-600 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-sm text-gray-500 dark:text-gray-400">Salidas / exportación</p>
+            <h1 className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white leading-tight">Despachos</h1>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 w-full sm:w-auto shrink-0">
+          <div className="w-full sm:w-auto min-h-[44px] sm:min-h-0 flex items-stretch sm:items-center [&_button]:min-h-[44px] sm:[&_button]:min-h-0">
           <ExportDropdown
             getExportConfig={() => {
               const listParams = { limit: 10000, offset: 0, fecha_desde: filtroFechaDesde || undefined, fecha_hasta: filtroFechaHasta || undefined, cliente_destino: filtroCliente?.trim() || undefined, especie_id: filtroEspecie || undefined, producto_id: filtroProducto || undefined, estado: filtroEstado || undefined }
@@ -629,49 +747,50 @@ const Despachos = () => {
               }
             }}
           />
-          <button type="button" onClick={abrirCrear} className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium">
-            <Plus className="w-5 h-5" />
+          </div>
+          <button type="button" onClick={abrirCrear} className="inline-flex items-center justify-center gap-2 w-full sm:w-auto min-h-[44px] px-4 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium">
+            <Plus className="w-5 h-5 shrink-0" />
             Nuevo despacho
           </button>
         </div>
       </div>
 
-      <div className="mb-6 p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
+      <div className="mb-6 p-3 sm:p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Filtros</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          <div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+          <div className="min-w-0">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Fecha desde</label>
-            <input type="date" value={filtroFechaDesde} onChange={(e) => setFiltroFechaDesde(e.target.value)} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm" />
+            <input type="date" value={filtroFechaDesde} onChange={(e) => setFiltroFechaDesde(e.target.value)} className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Fecha hasta</label>
-            <input type="date" value={filtroFechaHasta} onChange={(e) => setFiltroFechaHasta(e.target.value)} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm" />
+            <input type="date" value={filtroFechaHasta} onChange={(e) => setFiltroFechaHasta(e.target.value)} className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Cliente</label>
-            <input type="text" value={filtroCliente} onChange={(e) => setFiltroCliente(e.target.value)} placeholder="Cliente destino" className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm" />
+            <input type="text" value={filtroCliente} onChange={(e) => setFiltroCliente(e.target.value)} placeholder="Cliente destino" className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm" />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Especie</label>
-            <select value={filtroEspecie} onChange={(e) => setFiltroEspecie(e.target.value)} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm">
+            <select value={filtroEspecie} onChange={(e) => setFiltroEspecie(e.target.value)} className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm">
               <option value="">Todas</option>
               {especies.map((e) => (
                 <option key={e.id} value={e.id}>{e.nombre}</option>
               ))}
             </select>
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Producto</label>
-            <select value={filtroProducto} onChange={(e) => setFiltroProducto(e.target.value)} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm">
+            <select value={filtroProducto} onChange={(e) => setFiltroProducto(e.target.value)} className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm">
               <option value="">Todos</option>
               {productos.map((p) => (
                 <option key={p.id} value={p.id}>{p.codigo}</option>
               ))}
             </select>
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Estado</label>
-            <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm">
+            <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm">
               <option value="">Todos</option>
               <option value="Registrado">Registrado</option>
               <option value="Despachado">Despachado</option>
@@ -681,8 +800,8 @@ const Despachos = () => {
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="wms-table-scroll">
+          <table className="min-w-[64rem] w-full">
             <thead className="bg-gray-50 dark:bg-gray-900/50">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Fecha</th>
@@ -742,23 +861,23 @@ const Despachos = () => {
                     <td className="px-4 py-3 text-right font-medium text-gray-900 dark:text-white">{Number(d.total_kg).toFixed(2)}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap items-center justify-center gap-1">
-                        <button type="button" onClick={() => setModalDetalle(d.id)} className="p-2 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded" title="Ver detalles"><Info className="w-4 h-4" /></button>
+                        <button type="button" onClick={() => setModalDetalle(d.id)} className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-2 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg" title="Ver detalles"><Info className="w-4 h-4" /></button>
                         {d.estado === 'Registrado' && (
                           <>
-                            <button type="button" onClick={() => abrirEditar(d.id)} className="p-2 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded" title="Editar"><Edit className="w-4 h-4" /></button>
-                            <button type="button" onClick={() => eliminar(d.id)} className="p-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+                            <button type="button" onClick={() => abrirEditar(d.id)} className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-2 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg" title="Editar"><Edit className="w-4 h-4" /></button>
+                            <button type="button" onClick={() => eliminar(d.id)} className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
                           </>
                         )}
                         <span className={`px-2 py-1 rounded text-xs font-medium ${d.estado === 'Despachado' ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>
                           {d.estado}
                         </span>
                         {d.estado === 'Registrado' && (
-                          <button type="button" onClick={() => marcarDespachado(d.id)} disabled={cambiandoEstado === d.id} className="px-2 py-1 bg-primary-600 text-white rounded text-xs font-medium hover:bg-primary-700 disabled:opacity-50">
+                          <button type="button" onClick={() => abrirModalFinalizar(d.id, d.fecha_salida)} disabled={cambiandoEstado === d.id} className="min-h-[36px] px-2.5 py-1.5 bg-primary-600 text-white rounded-lg text-xs font-medium hover:bg-primary-700 disabled:opacity-50">
                             {cambiandoEstado === d.id ? '...' : 'Marcar Despachado'}
                           </button>
                         )}
-                        {d.estado === 'Despachado' && user?.rol === 'Admin' && (
-                          <button type="button" onClick={() => reabrirDespacho(d.id)} disabled={reabriendo === d.id} className="px-2 py-1 bg-amber-600 text-white rounded text-xs font-medium hover:bg-amber-700 disabled:opacity-50" title="Reabrir para editar (solo Admin)">
+                        {d.estado === 'Despachado' && canOperate('exportaciones.despachos') && (
+                          <button type="button" onClick={() => reabrirDespacho(d.id)} disabled={reabriendo === d.id} className="min-h-[36px] px-2.5 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-medium hover:bg-amber-700 disabled:opacity-50" title="Reabrir para editar (solo Admin)">
                             {reabriendo === d.id ? '...' : 'Reabrir'}
                           </button>
                         )}
@@ -787,7 +906,7 @@ const Despachos = () => {
         <form onSubmit={enviarForm} className="space-y-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Tipo de salida</label>
-            <select value={tipoSalida} onChange={(e) => setTipoSalida(e.target.value)} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white" required>
+            <select value={tipoSalida} onChange={(e) => setTipoSalida(e.target.value)} disabled={bloquearTipoSalida} className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white disabled:opacity-70" required>
               {TIPOS_SALIDA.map((t) => (<option key={t} value={t}>{t}</option>))}
             </select>
           </div>
@@ -827,6 +946,7 @@ const Despachos = () => {
                 <option value="">Especie</option>
                 {especies.map((e) => (<option key={e.id} value={e.id}>{e.nombre}</option>))}
               </select>
+              <input type="text" value={filtroStockLote} onChange={(e) => setFiltroStockLote(e.target.value)} placeholder="Lote prod." className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm w-28" title="Filtrar por lote de producción" />
               <select value={filtroStockAlmacen} onChange={(e) => setFiltroStockAlmacen(e.target.value)} className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm">
                 <option value="">Almacén</option>
                 {almacenesList.map((a) => (<option key={a.id} value={a.id}>{a.nombre}</option>))}
@@ -986,6 +1106,17 @@ const Despachos = () => {
                 <span className="font-medium text-gray-700 dark:text-gray-300">Total adicional (kg): <strong className="text-gray-900 dark:text-white">{(detalle.estado === 'Despachado' && detalle.total_adicional_despacho != null ? detalle.total_adicional_despacho : totalesDetalle.adicional).toFixed(2)}</strong></span>
                 <span className="font-medium text-gray-700 dark:text-gray-300">Total kg a despachar: <strong className="text-gray-900 dark:text-white">{(detalle.estado === 'Despachado' && detalle.total_kg_despacho != null ? detalle.total_kg_despacho : totalesDetalle.total_kg).toFixed(2)}</strong></span>
               </div>
+              {requeridosDespacho.activa && (
+                <div className={`mb-3 p-3 rounded-lg border text-sm ${
+                  excedidosRequerido.length > 0
+                    ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-800 dark:text-red-200'
+                    : 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200'
+                }`}>
+                  {excedidosRequerido.length > 0
+                    ? `Exceso detectado vs OP ${requeridosDespacho.ordenProduccion || ''}: ${excedidosRequerido.map((x) => `${x.codigo} (${x.enviado} > ${x.requerido})`).join(', ')}`
+                    : `Validación OP ${requeridosDespacho.ordenProduccion || ''}: cantidades dentro de lo requerido por producto.`}
+                </div>
+              )}
               {(detalle.lineas || []).length === 0 ? (
                 <p className="text-sm text-gray-500 dark:text-gray-400 py-3">Sin productos. Agregue desde Almacenes (vista posición/nivel) o con el botón inferior.</p>
               ) : vistaLineasDetalle === 'resumida' ? (
@@ -1160,12 +1291,12 @@ const Despachos = () => {
                 <button type="button" onClick={() => setAgregarADespachoId(modalDetalle)} className="px-4 py-2 bg-gray-600 dark:bg-gray-500 text-white rounded-lg text-sm font-medium hover:bg-gray-700 dark:hover:bg-gray-600">
                   Agregar productos
                 </button>
-                <button type="button" onClick={() => marcarDespachado(modalDetalle)} disabled={cambiandoEstado === modalDetalle || (detalle.lineas || []).length === 0 || tieneCambiosSinGuardar} className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50" title={tieneCambiosSinGuardar ? 'Guardar los cambios de cantidades antes de dar salida' : ''}>
+                <button type="button" onClick={() => abrirModalFinalizar(modalDetalle, detalle?.fecha_salida)} disabled={cambiandoEstado === modalDetalle || (detalle.lineas || []).length === 0 || tieneCambiosSinGuardar || excedidosRequerido.length > 0} className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50" title={tieneCambiosSinGuardar ? 'Guardar los cambios de cantidades antes de dar salida' : (excedidosRequerido.length > 0 ? 'No puede dar salida: hay productos por encima de lo requerido' : '')}>
                   {cambiandoEstado === modalDetalle ? '...' : 'Dar salida'}
                 </button>
               </div>
             )}
-            {detalle.estado === 'Despachado' && user?.rol === 'Admin' && (
+            {detalle.estado === 'Despachado' && canOperate('exportaciones.despachos') && (
               <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-200 dark:border-gray-600">
                 <button type="button" onClick={() => reabrirDespacho(modalDetalle)} disabled={reabriendo === modalDetalle} className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50" title="Reabrir para editar (solo Admin)">
                   {reabriendo === modalDetalle ? 'Reabriendo...' : 'Reabrir despacho'}
@@ -1194,6 +1325,7 @@ const Despachos = () => {
               <option value="">Especie</option>
               {especies.map((e) => (<option key={e.id} value={e.id}>{e.nombre}</option>))}
             </select>
+            <input type="text" value={filtroStockLote} onChange={(e) => setFiltroStockLote(e.target.value)} placeholder="Lote prod." className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm w-28" title="Filtrar por lote de producción" />
             <select value={filtroStockAlmacen} onChange={(e) => setFiltroStockAlmacen(e.target.value)} className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white text-sm" title="Filtrar por almacén">
               <option value="">Almacén</option>
               {almacenesList.map((a) => (<option key={a.id} value={a.id}>{a.nombre}</option>))}
@@ -1273,6 +1405,59 @@ const Despachos = () => {
             <button type="button" onClick={confirmarAgregarProductos} disabled={saving} className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg font-medium disabled:opacity-50 flex items-center justify-center gap-2">
               {saving && <Loader2 className="w-4 h-4 animate-spin" />}
               Agregar seleccionados al despacho
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={!!modalFinalizar} onClose={() => { if (cambiandoEstado !== modalFinalizar?.id) cerrarModalFinalizar() }} title="Finalizar despacho" size="md">
+        <div className="space-y-4 text-sm text-gray-800 dark:text-gray-200">
+          <p className="text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
+            Al confirmar se descontará el stock. Revise la <strong>fecha real de salida</strong>: puede mantener la fecha probable o cambiarla.
+          </p>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Fecha de salida (programada o real)</label>
+            <input
+              type="date"
+              value={finalizarForm.fecha_salida}
+              onChange={(e) => setFinalizarForm((f) => ({ ...f, fecha_salida: e.target.value }))}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              disabled={!!cambiandoEstado}
+            />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Por defecto se usa la fecha del despacho (p. ej. la probable de embarque). Cámbiela si la salida física fue en otra fecha.
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">N° de contenedor</label>
+            <input
+              type="text"
+              value={finalizarForm.contenedor}
+              onChange={(e) => setFinalizarForm((f) => ({ ...f, contenedor: e.target.value }))}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              placeholder="Ej. TCLU-25383-7"
+              disabled={!!cambiandoEstado}
+              autoComplete="off"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">N° de guía de salida</label>
+            <input
+              type="text"
+              value={finalizarForm.guia_salida}
+              onChange={(e) => setFinalizarForm((f) => ({ ...f, guia_salida: e.target.value }))}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+              placeholder="Guía de salida"
+              disabled={!!cambiandoEstado}
+              autoComplete="off"
+            />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={cerrarModalFinalizar} disabled={!!cambiandoEstado} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 font-medium disabled:opacity-50">
+              Cancelar
+            </button>
+            <button type="button" onClick={ejecutarFinalizarDespacho} disabled={!!cambiandoEstado} className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50">
+              {cambiandoEstado ? 'Procesando...' : 'Confirmar y despachar'}
             </button>
           </div>
         </div>

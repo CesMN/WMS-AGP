@@ -1,7 +1,8 @@
 /**
  * Traduce códigos de lote a fecha legible.
  * - Julian: "195-26" → día del año 195, año 26 (2026) → 14/07/2026
- * - Republicano: "29N-H" → día 29, mes N (REPUBLICANOS), año H (según mapa) → 29/10/2025
+ * - Republicano: "004P-I" → día 4, mes P (marzo), año por letra I (mapa en Configuración o respaldo G–K).
+ * Normaliza guiones Unicode y espacios raros antes de parsear.
  */
 
 const REPUBLICAN_MES = {
@@ -20,11 +21,30 @@ const REPUBLICAN_MES = {
 }
 
 /**
+ * Año por letra cuando no existe en configuración (heurística típica H=2025, I=2026…).
+ * La configuración del sistema (lote_republicano_anos) siempre pisa estos valores.
+ */
+const ANO_LETRA_RESPALDO = {
+  G: '2024',
+  H: '2025',
+  I: '2026',
+  J: '2027',
+  K: '2028',
+}
+
+function normalizarTextoLote(str) {
+  return String(str || '')
+    .trim()
+    .replace(/[\uFEFF\u200B-\u200D\u2060]/g, '')
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2212]/g, '-')
+}
+
+/**
  * Parsea lote juliano: "195-26" (día del año - año en 2 dígitos).
  * Año 00-99 se interpreta como 2000-2099.
  */
 function parseJulian(str) {
-  const trimmed = String(str || '').trim()
+  const trimmed = normalizarTextoLote(str)
   const match = trimmed.match(/^(\d{1,3})-(\d{2})$/)
   if (!match) return null
   const diaAno = parseInt(match[1], 10)
@@ -42,8 +62,9 @@ function parseJulian(str) {
  * anoLetrasMap: { "H": "2025", "I": "2026" } (letra → año completo).
  */
 function parseRepublicano(str, anoLetrasMap) {
-  const trimmed = String(str || '').trim()
-  const match = trimmed.match(/^(\d{1,2})([REPUBLICANOS])-([A-Za-z])$/i)
+  const trimmed = normalizarTextoLote(str)
+  // Día 1–3 dígitos (ej. 4, 04, 004) + letra mes republicano + "-" + letra año
+  const match = trimmed.match(/^(\d{1,3})([REPUBLICANOS])-([A-Za-z])$/i)
   if (!match) return null
   const dia = parseInt(match[1], 10)
   const mesLetra = match[2].toUpperCase()
@@ -62,20 +83,22 @@ function parseRepublicano(str, anoLetrasMap) {
 /**
  * Traduce un string de lote a fecha en formato DD/MM/YYYY, o null si no se puede traducir.
  * @param {string} loteStr - Código del lote (ej. "195-26" o "29N-H")
- * @param {Object} anoLetrasMap - Mapa letra → año para formato republicano (ej. { H: "2025" })
+ * @param {Object} anoLetrasMap - Mapa letra → año (sobrescribe el respaldo G=2024 … K=2028)
  * @returns {string|null} Fecha "DD/MM/YYYY" o null
  */
 export function traducirLoteAFecha(loteStr, anoLetrasMap = {}) {
   if (loteStr == null || String(loteStr).trim() === '') return null
-  const normalizedMap = {}
+  const loteNorm = normalizarTextoLote(loteStr)
+  if (!loteNorm) return null
+  const normalizedMap = { ...ANO_LETRA_RESPALDO }
   if (anoLetrasMap && typeof anoLetrasMap === 'object') {
     Object.keys(anoLetrasMap).forEach((k) => {
       const v = anoLetrasMap[k]
       if (v != null && v !== '') normalizedMap[k.toUpperCase()] = String(v)
     })
   }
-  let date = parseRepublicano(loteStr, normalizedMap)
-  if (!date) date = parseJulian(loteStr)
+  let date = parseRepublicano(loteNorm, normalizedMap)
+  if (!date) date = parseJulian(loteNorm)
   if (!date || isNaN(date.getTime())) return null
   const d = date.getDate()
   const m = date.getMonth() + 1

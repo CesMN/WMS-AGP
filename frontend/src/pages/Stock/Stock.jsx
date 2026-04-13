@@ -6,6 +6,7 @@ import PaginationBar from '../../components/PaginationBar'
 import ExportDropdown from '../../components/ExportDropdown'
 import { stockApi } from '../../api/stock'
 import { almacenesApi } from '../../api/almacenes'
+import { despachosApi } from '../../api/despachos'
 import { especiesApi } from '../../api/especies'
 import { clientesApi } from '../../api/clientes'
 import { useConfig } from '../../contexts/ConfigContext'
@@ -40,6 +41,7 @@ const Stock = () => {
   const [detalleItem, setDetalleItem] = useState(null)
   const [verLotes, setVerLotes] = useState(false)
   const [expandidosLotes, setExpandidosLotes] = useState(new Set())
+  const [despachoResaltado, setDespachoResaltado] = useState({ id: '', activa: false, codigos: new Set(), ordenProduccion: '' })
 
   useEffect(() => {
     if (clienteFromUrl) setFiltroCliente(clienteFromUrl)
@@ -140,6 +142,51 @@ const Stock = () => {
     return () => { cancelled = true }
   }, [filtroAlmacen, filtroCarril, filtroNivel, filtroPosicion, filtroEspecie, filtroCliente, busqueda, offset, registrosPorPagina, refreshKey])
 
+  useEffect(() => {
+    let cancel = false
+    const cargarRequeridos = async () => {
+      let despachoId = ''
+      try {
+        despachoId = localStorage.getItem('despacho_activo_requeridos_id') || ''
+      } catch (_) {
+        despachoId = ''
+      }
+      if (!despachoId) {
+        if (!cancel) setDespachoResaltado({ id: '', activa: false, codigos: new Set(), ordenProduccion: '' })
+        return
+      }
+      try {
+        const { data } = await despachosApi.obtenerProductosRequeridos(despachoId)
+        if (cancel) return
+        if (!data?.activa) {
+          try {
+            localStorage.removeItem('despacho_activo_requeridos_id')
+          } catch (_) { /* noop */ }
+          setDespachoResaltado({ id: '', activa: false, codigos: new Set(), ordenProduccion: '' })
+          return
+        }
+        setDespachoResaltado({
+          id: String(despachoId),
+          activa: true,
+          codigos: new Set((data?.productos || []).map((p) => String(p.codigo || '').trim()).filter(Boolean)),
+          ordenProduccion: String(data?.orden_produccion || '').trim(),
+        })
+      } catch (_) {
+        try {
+          localStorage.removeItem('despacho_activo_requeridos_id')
+        } catch (_) { /* noop */ }
+        if (!cancel) setDespachoResaltado({ id: '', activa: false, codigos: new Set(), ordenProduccion: '' })
+      }
+    }
+    cargarRequeridos()
+    const handler = () => cargarRequeridos()
+    window.addEventListener('despacho-requeridos-actualizados', handler)
+    return () => {
+      cancel = true
+      window.removeEventListener('despacho-requeridos-actualizados', handler)
+    }
+  }, [])
+
   const toggleExpand = (productoId) => {
     setExpandidoId((prev) => (prev === productoId ? null : productoId))
   }
@@ -152,15 +199,16 @@ const Stock = () => {
   const totalKg = items.reduce((s, i) => s + (Number(i.total_kg) || 0), 0)
 
   return (
-    <div>
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-3">
-          <Package className="w-8 h-8 text-primary-600" />
-          <div>
+    <div className="min-w-0 max-w-full">
+      <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between mb-5 sm:mb-6">
+        <div className="flex items-start gap-3 min-w-0">
+          <Package className="w-7 h-7 sm:w-8 sm:h-8 text-primary-600 shrink-0" />
+          <div className="min-w-0">
             <p className="text-sm text-gray-500 dark:text-gray-400">Inventario</p>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Stock por producto</h1>
+            <h1 className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white leading-tight">Stock por producto</h1>
           </div>
         </div>
+        <div className="w-full sm:w-auto shrink-0">
         <ExportDropdown
           getExportConfig={() => ({
             title: 'Stock por producto',
@@ -178,17 +226,18 @@ const Stock = () => {
             fetchData: () => stockApi.listar({ limit: 10000, offset: 0, almacen_id: filtroAlmacen || undefined, carril_id: filtroCarril || undefined, nivel_id: filtroNivel || undefined, posicion_id: filtroPosicion || undefined, especie_id: filtroEspecie || undefined, cliente_id: filtroCliente || undefined, q: busqueda.trim() || undefined }).then((r) => ({ data: r.data?.data ?? r.data ?? [] })),
           })}
         />
+        </div>
       </div>
 
-      <div className="mb-6 p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
+      <div className="mb-6 p-3 sm:p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
         <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Filtros</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3 sm:gap-4">
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Almacén</label>
             <select
               value={filtroAlmacen}
               onChange={(e) => setFiltroAlmacen(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
             >
               <option value="">Todos</option>
               {almacenes.map((a) => (
@@ -202,7 +251,7 @@ const Stock = () => {
               value={filtroCarril}
               onChange={(e) => setFiltroCarril(e.target.value)}
               disabled={!filtroAlmacen}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <option value="">Todos</option>
               {carrilesList.map((c) => (
@@ -216,7 +265,7 @@ const Stock = () => {
               value={filtroNivel}
               onChange={(e) => setFiltroNivel(e.target.value)}
               disabled={!filtroCarril}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <option value="">Todos</option>
               {nivelesList.map((n) => (
@@ -230,7 +279,7 @@ const Stock = () => {
               value={filtroPosicion}
               onChange={(e) => setFiltroPosicion(e.target.value)}
               disabled={!filtroCarril}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <option value="">Todas</option>
               {(filtroNivel ? posicionesList.filter((p) => p.nivel_id === filtroNivel) : posicionesList).map((p) => (
@@ -243,7 +292,7 @@ const Stock = () => {
             <select
               value={filtroEspecie}
               onChange={(e) => setFiltroEspecie(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
             >
               <option value="">Todas</option>
               {especies.map((e) => (
@@ -256,7 +305,7 @@ const Stock = () => {
             <select
               value={filtroCliente}
               onChange={(e) => setFiltroCliente(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+              className="w-full min-h-[44px] px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
             >
               <option value="">Todos</option>
               {clientes.map((c) => (
@@ -273,12 +322,18 @@ const Stock = () => {
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
                 placeholder="Código, nombre o descripción..."
-                className="w-full pl-9 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
+                className="w-full min-h-[44px] pl-9 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 dark:bg-gray-700 dark:text-white text-sm"
               />
             </div>
           </div>
         </div>
       </div>
+
+      {despachoResaltado.activa && (
+        <div className="mb-4 px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 text-sm">
+          Resaltando codigos requeridos por OP {despachoResaltado.ordenProduccion || '-'}.
+        </div>
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center py-12">
@@ -287,8 +342,8 @@ const Stock = () => {
       ) : (
         <>
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
+            <div className="wms-table-scroll">
+              <table className="min-w-[56rem] w-full">
                 <thead className="bg-gray-50 dark:bg-gray-900/50">
                   <tr>
                     <th className="w-9 p-2" />
@@ -313,15 +368,18 @@ const Stock = () => {
                   ) : (
                     items.map((item) => (
                       <Fragment key={item.producto_id}>
+                        {(() => {
+                          const esRequerido = despachoResaltado.activa && despachoResaltado.codigos.has(String(item.codigo || '').trim())
+                          return (
                         <tr
-                          className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                          className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${esRequerido ? 'bg-amber-50 dark:bg-amber-900/10' : ''}`}
                         >
                           <td className="p-2">
                             {item.ubicaciones && item.ubicaciones.length > 0 && (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(item.producto_id)}
-                                className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600"
+                                className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600"
                               >
                                 {expandidoId === item.producto_id ? (
                                   <ChevronDown className="w-4 h-4 text-gray-500" />
@@ -332,7 +390,14 @@ const Stock = () => {
                             )}
                           </td>
                           <td className="px-4 py-1">
-                            <div className="font-medium text-gray-900 dark:text-white">{item.codigo}</div>
+                            <div className={`font-medium ${esRequerido ? 'text-amber-700 dark:text-amber-300' : 'text-gray-900 dark:text-white'}`}>
+                              {item.codigo}
+                              {esRequerido && (
+                                <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
+                                  Requerido
+                                </span>
+                              )}
+                            </div>
                             <div className="text-sm text-gray-500 dark:text-gray-400">{item.producto_nombre}</div>
                           </td>
                           <td className="px-4 py-1 text-sm text-gray-700 dark:text-gray-300 min-w-[160px] max-w-[260px] align-top">
@@ -372,6 +437,8 @@ const Stock = () => {
                             </button>
                           </td>
                         </tr>
+                          )
+                        })()}
                         {expandidoId === item.producto_id && item.ubicaciones?.length > 0 && (
                           <tr className="bg-gray-50 dark:bg-gray-900/30">
                             <td colSpan={10} className="px-4 py-3">

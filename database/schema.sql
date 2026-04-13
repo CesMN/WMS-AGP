@@ -10,7 +10,23 @@ CREATE TABLE usuarios (
     nombre VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    rol VARCHAR(50) NOT NULL CHECK (rol IN ('Admin', 'Usuario', 'Visitante')),
+    rol VARCHAR(50) NOT NULL CHECK (rol IN (
+      'Administrador',
+      'Jefe Planta',
+      'Gerencia',
+      'Area Contable',
+      'Almacen',
+      'Produccion',
+      'Supervisor de Envasado',
+      'Supervisor de Congelado',
+      'Supervisor de Empaque',
+      'Camaras de Almacenamiento',
+      'Recepcion',
+      'Garita',
+      'Supervisor de Proceso',
+      'Supervisor de Calidad',
+      'Exportaciones'
+    )),
     activo BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -115,7 +131,7 @@ CREATE TABLE stock_posiciones (
     lote VARCHAR(255),
     referencia VARCHAR(255) NOT NULL, -- Tipo de referencia de ingreso
     fecha_ingreso DATE NOT NULL,
-    cantidad_bultos INTEGER NOT NULL CHECK (cantidad_bultos > 0),
+    cantidad_bultos NUMERIC(12, 2) NOT NULL CHECK (cantidad_bultos > 0),
     peso_adicional DECIMAL(10, 2) DEFAULT 0,
     total_kg DECIMAL(10, 2) NOT NULL, -- Calculado: (bultos * formato) + peso_adicional (convertido si es LB)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -145,7 +161,7 @@ CREATE TABLE movimiento_detalles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     movimiento_id UUID NOT NULL REFERENCES movimientos(id) ON DELETE CASCADE,
     producto_id UUID NOT NULL REFERENCES productos(id) ON DELETE RESTRICT,
-    cantidad_bultos INTEGER NOT NULL,
+    cantidad_bultos NUMERIC(12, 2) NOT NULL,
     total_kg DECIMAL(10, 2) NOT NULL,
     peso_adicional DECIMAL(10, 2) DEFAULT 0,
     almacen_id UUID REFERENCES almacenes(id) ON DELETE SET NULL,
@@ -183,7 +199,7 @@ CREATE TABLE despacho_detalles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     despacho_id UUID NOT NULL REFERENCES despachos(id) ON DELETE CASCADE,
     stock_posicion_id UUID NOT NULL REFERENCES stock_posiciones(id) ON DELETE RESTRICT,
-    cantidad_bultos INTEGER NOT NULL CHECK (cantidad_bultos > 0),
+    cantidad_bultos NUMERIC(12, 2) NOT NULL CHECK (cantidad_bultos > 0),
     total_kg DECIMAL(10, 2) NOT NULL,
     peso_adicional DECIMAL(10, 2) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -199,6 +215,33 @@ CREATE TABLE configuracion (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- RBAC
+CREATE TABLE rbac_recursos (
+    codigo VARCHAR(120) PRIMARY KEY,
+    nombre VARCHAR(255) NOT NULL,
+    seccion VARCHAR(120) NOT NULL,
+    orden INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE rbac_roles_permisos (
+    rol VARCHAR(80) NOT NULL,
+    recurso_codigo VARCHAR(120) NOT NULL REFERENCES rbac_recursos(codigo) ON DELETE CASCADE,
+    puede_ver BOOLEAN NOT NULL DEFAULT FALSE,
+    puede_operar BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (rol, recurso_codigo)
+);
+
+CREATE TABLE rbac_usuarios_overrides (
+    usuario_id UUID NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    recurso_codigo VARCHAR(120) NOT NULL REFERENCES rbac_recursos(codigo) ON DELETE CASCADE,
+    override_ver BOOLEAN,
+    override_operar BOOLEAN,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (usuario_id, recurso_codigo)
+);
+
 -- Índices para mejorar rendimiento
 CREATE INDEX idx_stock_posiciones_posicion ON stock_posiciones(posicion_id);
 CREATE INDEX idx_stock_posiciones_producto ON stock_posiciones(producto_id);
@@ -209,6 +252,8 @@ CREATE INDEX idx_despachos_estado ON despachos(estado);
 CREATE INDEX idx_productos_codigo ON productos(codigo);
 CREATE INDEX idx_productos_cliente ON productos(cliente_id);
 CREATE INDEX idx_productos_especie ON productos(especie_id);
+CREATE INDEX idx_rbac_roles_rol ON rbac_roles_permisos(rol);
+CREATE INDEX idx_rbac_overrides_usuario ON rbac_usuarios_overrides(usuario_id);
 
 -- Función para actualizar updated_at automáticamente
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -323,3 +368,31 @@ INSERT INTO configuracion (clave, valor, tipo, descripcion) VALUES
 
 -- Nota: El usuario administrador se crea mediante el script init-admin.js
 -- Ejecutar: node backend/scripts/init-admin.js
+
+-- Notificaciones (feed central)
+CREATE TABLE IF NOT EXISTS notificaciones (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    tipo VARCHAR(120) NOT NULL,
+    modulo VARCHAR(120) NOT NULL,
+    severidad VARCHAR(20) NOT NULL DEFAULT 'info' CHECK (severidad IN ('info', 'success', 'warning', 'error')),
+    titulo VARCHAR(255) NOT NULL,
+    mensaje TEXT,
+    origen_tabla VARCHAR(80),
+    origen_id VARCHAR(80),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS notificaciones_usuarios (
+    notificacion_id UUID NOT NULL REFERENCES notificaciones(id) ON DELETE CASCADE,
+    usuario_id UUID NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    leida_at TIMESTAMPTZ,
+    descartada_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (notificacion_id, usuario_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notificaciones_fecha ON notificaciones (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notificaciones_modulo ON notificaciones (modulo);
+CREATE INDEX IF NOT EXISTS idx_notificaciones_severidad ON notificaciones (severidad);
+CREATE INDEX IF NOT EXISTS idx_notif_usuario_estado ON notificaciones_usuarios (usuario_id, leida_at, descartada_at);

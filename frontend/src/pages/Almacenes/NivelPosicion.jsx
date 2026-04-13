@@ -29,6 +29,8 @@ const NivelPosicion = () => {
   const [despachosRegistrados, setDespachosRegistrados] = useState([])
   const [despachoSeleccionado, setDespachoSeleccionado] = useState('')
   const [agregandoADespacho, setAgregandoADespacho] = useState(false)
+  const [productosRequeridosDespacho, setProductosRequeridosDespacho] = useState({ activa: false, codigos: new Set(), ordenProduccion: '' })
+  const [resumenAgregarPosicion, setResumenAgregarPosicion] = useState({ total: 0, requeridos: 0, omitidos: 0, codigosOmitidos: [] })
   const { enTransito, setEnTransito, clearTransito } = usePosicionEnTransito()
   const [almacenesDrawer, setAlmacenesDrawer] = useState([])
   const [carrilesPorAlmacen, setCarrilesPorAlmacen] = useState({})
@@ -37,6 +39,22 @@ const NivelPosicion = () => {
   const [matrizPorCarril, setMatrizPorCarril] = useState({})
   const [moverAquiLoading, setMoverAquiLoading] = useState(null)
   const [panelDestinoAbierto, setPanelDestinoAbierto] = useState(true)
+
+  const idsEnDespacho = new Set(
+    despachosRegistrados.flatMap((d) =>
+      (d?.productos || [])
+        .map((p) => p?.stock_posicion_id)
+        .filter(Boolean)
+    )
+  )
+  const bultosEnDespachoPorStock = despachosRegistrados
+    .flatMap((d) => (d?.productos || []))
+    .filter((p) => p?.stock_posicion_id)
+    .reduce((acc, p) => {
+      const k = p.stock_posicion_id
+      acc.set(k, (acc.get(k) || 0) + (Number(p.cantidad_bultos) || 0))
+      return acc
+    }, new Map())
 
   useEffect(() => {
     if (!almacenId || !carrilId) return
@@ -205,13 +223,130 @@ const NivelPosicion = () => {
   }
 
   useEffect(() => {
-    if (modalDespacho.open) {
+    const cargarDespachos = () => {
       despachosApi.listar({ estado: 'Registrado', limit: 100 })
         .then((r) => setDespachosRegistrados(r.data?.data ?? r.data ?? []))
         .catch(() => setDespachosRegistrados([]))
-      setDespachoSeleccionado('')
     }
+    if (modalDespacho.open) setDespachoSeleccionado('')
+    cargarDespachos()
+    window.addEventListener('despachos-actualizados', cargarDespachos)
+    return () => window.removeEventListener('despachos-actualizados', cargarDespachos)
   }, [modalDespacho.open])
+
+  const cargarRequeridosDespacho = async (despachoId) => {
+    if (!despachoId) {
+      setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+      return { activa: false }
+    }
+    const { data } = await despachosApi.obtenerProductosRequeridos(despachoId)
+    const codigos = new Set((data?.productos || []).map((p) => String(p.codigo || '').trim()).filter(Boolean))
+    if (!data?.activa) {
+      try {
+        localStorage.removeItem('despacho_activo_requeridos_id')
+      } catch (_) { /* noop */ }
+      setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+      return { activa: false }
+    }
+    setProductosRequeridosDespacho({
+      activa: true,
+      codigos,
+      ordenProduccion: String(data?.orden_produccion || '').trim(),
+    })
+    return { activa: true }
+  }
+
+  useEffect(() => {
+    let cancel = false
+    const cargarInicial = async () => {
+      let despachoId = ''
+      try {
+        despachoId = localStorage.getItem('despacho_activo_requeridos_id') || ''
+      } catch (_) {
+        despachoId = ''
+      }
+      if (!despachoId) return
+      try {
+        if (!cancel) await cargarRequeridosDespacho(despachoId)
+      } catch (_) {
+        try {
+          localStorage.removeItem('despacho_activo_requeridos_id')
+        } catch (_) { /* noop */ }
+        if (!cancel) setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+      }
+    }
+    const handler = (e) => {
+      const id = String(e?.detail?.despachoId || '')
+      cargarRequeridosDespacho(id).catch(() => setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' }))
+    }
+    cargarInicial()
+    window.addEventListener('despacho-requeridos-actualizados', handler)
+    return () => {
+      cancel = true
+      window.removeEventListener('despacho-requeridos-actualizados', handler)
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancel = false
+    if (!despachoSeleccionado) {
+      setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+      return
+    }
+    cargarRequeridosDespacho(despachoSeleccionado)
+      .then((res) => {
+        if (cancel) return
+        if (!res?.activa) return
+        try {
+          localStorage.setItem('despacho_activo_requeridos_id', String(despachoSeleccionado))
+          window.dispatchEvent(new CustomEvent('despacho-requeridos-actualizados', { detail: { despachoId: String(despachoSeleccionado) } }))
+        } catch (_) { /* noop */ }
+      })
+      .catch(() => {
+        try {
+          localStorage.removeItem('despacho_activo_requeridos_id')
+        } catch (_) { /* noop */ }
+        if (!cancel) setProductosRequeridosDespacho({ activa: false, codigos: new Set(), ordenProduccion: '' })
+      })
+    return () => { cancel = true }
+  }, [despachoSeleccionado])
+
+  useEffect(() => {
+    let cancel = false
+    const cargarResumen = async () => {
+      if (!modalDespacho.open || !modalDespacho.posicionId || !despachoSeleccionado) {
+        setResumenAgregarPosicion({ total: 0, requeridos: 0, omitidos: 0, codigosOmitidos: [] })
+        return
+      }
+      try {
+        const { data } = await almacenesApi.obtenerPosicion(almacenId, carrilId, modalDespacho.posicionId)
+        if (cancel) return
+        const stockPos = Array.isArray(data?.stock) ? data.stock : []
+        const codigos = stockPos.map((s) => String(s?.producto_codigo || '').trim()).filter(Boolean)
+        if (!productosRequeridosDespacho.activa) {
+          setResumenAgregarPosicion({
+            total: stockPos.length,
+            requeridos: stockPos.length,
+            omitidos: 0,
+            codigosOmitidos: [],
+          })
+          return
+        }
+        const requeridos = codigos.filter((c) => productosRequeridosDespacho.codigos.has(c)).length
+        const omitidosCodes = [...new Set(codigos.filter((c) => !productosRequeridosDespacho.codigos.has(c)))]
+        setResumenAgregarPosicion({
+          total: stockPos.length,
+          requeridos,
+          omitidos: omitidosCodes.length,
+          codigosOmitidos: omitidosCodes,
+        })
+      } catch (_) {
+        if (!cancel) setResumenAgregarPosicion({ total: 0, requeridos: 0, omitidos: 0, codigosOmitidos: [] })
+      }
+    }
+    cargarResumen()
+    return () => { cancel = true }
+  }, [modalDespacho.open, modalDespacho.posicionId, despachoSeleccionado, productosRequeridosDespacho, almacenId, carrilId])
 
   const confirmarAgregarPosicionAlDespacho = async () => {
     if (!despachoSeleccionado || !modalDespacho.posicionId) return
@@ -241,36 +376,38 @@ const NivelPosicion = () => {
   const matrizVista = [...matrizSegura].reverse()
 
   return (
-    <div>
-      <div className="flex flex-wrap items-center gap-4 mb-4">
+    <div className="min-w-0 max-w-full">
+      <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-center gap-3 lg:gap-4 mb-4">
         <button
           type="button"
           onClick={volver}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          className="inline-flex items-center justify-center gap-2 min-h-[44px] w-full lg:w-auto px-4 py-2.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 shrink-0"
         >
-          <ArrowLeft className="w-4 h-4" />
+          <ArrowLeft className="w-4 h-4 shrink-0" />
           Regresar
         </button>
-        <div className="flex items-center gap-3 flex-1">
-          <Grid3X3 className="w-8 h-8 text-primary-600" />
-          <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Vista Nivel-Posición</p>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-              Almacén: <span className="text-primary-600 dark:text-primary-400">{almacenNombre}</span> &gt; Carril: <span className="text-primary-600 dark:text-primary-400">{carrilNombre}</span>
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <Grid3X3 className="w-7 h-7 sm:w-8 sm:h-8 text-primary-600 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-sm text-gray-500 dark:text-gray-400">Vista nivel–posición</p>
+            <h1 className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white leading-tight">
+              Almacén: <span className="text-primary-600 dark:text-primary-400">{almacenNombre}</span>{' '}
+              <span className="text-gray-400 font-normal">&gt;</span> Carril:{' '}
+              <span className="text-primary-600 dark:text-primary-400">{carrilNombre}</span>
             </h1>
           </div>
         </div>
         <button
           type="button"
           onClick={() => setModoMover((m) => !m)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+          className={`inline-flex items-center justify-center gap-2 min-h-[44px] w-full lg:w-auto px-4 py-2.5 rounded-lg font-medium transition-colors shrink-0 ${
             modoMover
               ? 'bg-primary-600 text-white hover:bg-primary-700'
               : 'bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-500'
           }`}
           title={modoMover ? 'Desactivar modo mover (hacer clic en una posición para ir al detalle)' : 'Activar para arrastrar una posición a otra y mover todos sus productos'}
         >
-          <Move className="w-5 h-5" />
+          <Move className="w-5 h-5 shrink-0" />
           {modoMover ? 'Modo mover (activo)' : 'Modo mover'}
         </button>
       </div>
@@ -316,7 +453,7 @@ const NivelPosicion = () => {
         </div>
       </div>
 
-      <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+      <div className="wms-table-scroll bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 shadow-sm">
         <table className="w-full border-collapse">
           <thead>
             <tr>
@@ -342,8 +479,34 @@ const NivelPosicion = () => {
                   </div>
                 </td>
                 {(fila.posiciones || []).map((pos) => {
+                  const codigoPos = String(pos.producto_codigo || '').trim()
+                  const codigoRequerido = productosRequeridosDespacho.activa && codigoPos && productosRequeridosDespacho.codigos.has(codigoPos)
                   const esBloqueada = pos.bloqueada
+                  const stockPosicionIds = Array.isArray(pos.stock_posicion_ids) ? pos.stock_posicion_ids.filter(Boolean) : []
+                  const stockItems = Array.isArray(pos.stock_items) ? pos.stock_items : []
+                  const totalItems = stockItems.length > 0 ? stockItems.length : stockPosicionIds.length
+                  const despachadosItems = stockItems.length > 0
+                    ? stockItems.filter((it) => {
+                        const desp = Number(bultosEnDespachoPorStock.get(it?.id) || 0)
+                        const stk = Number(it?.cantidad_bultos || 0)
+                        return desp > 0 && stk > 0
+                      }).length
+                    : (totalItems > 0 ? stockPosicionIds.filter((id) => idsEnDespacho.has(id)).length : 0)
+                  const completosItems = stockItems.length > 0
+                    ? stockItems.filter((it) => {
+                        const desp = Number(bultosEnDespachoPorStock.get(it?.id) || 0)
+                        const stk = Number(it?.cantidad_bultos || 0)
+                        return stk > 0 && desp >= stk
+                      }).length
+                    : despachadosItems
+                  const posicionCompletaEnDespacho = totalItems > 0 && completosItems === totalItems
+                  const posicionParcialEnDespacho = totalItems > 0 && despachadosItems > 0 && !posicionCompletaEnDespacho
                   const estadoVisual = esBloqueada ? 'Bloqueado' : pos.estado
+                  const colorFondoPosicion = posicionCompletaEnDespacho
+                    ? 'bg-blue-600 dark:bg-blue-700 border-blue-700 dark:border-blue-500'
+                    : posicionParcialEnDespacho
+                    ? 'bg-sky-500 dark:bg-sky-600 border-sky-600 dark:border-sky-400'
+                    : (ESTADO_COLORS[estadoVisual] || ESTADO_COLORS.Disponible)
                   const tituloCelda = esBloqueada
                     ? `${etiquetaPosicion(pos.numero_posicion)} - Bloqueada`
                     : `${etiquetaPosicion(pos.numero_posicion)} - Estado: ${pos.estado}`
@@ -352,7 +515,7 @@ const NivelPosicion = () => {
                   return (
                     <td
                       key={pos.id}
-                      className="border border-gray-300 dark:border-gray-600 p-2 min-w-[140px]"
+                      className="border border-gray-300 dark:border-gray-600 p-1 min-w-[112px]"
                       draggable={puedeArrastrar && !movingTodo}
                       onDragStart={puedeArrastrar ? (e) => handleDragStart(e, pos, fila) : undefined}
                       onDragOver={puedeSoltar ? handleDragOver : undefined}
@@ -364,25 +527,35 @@ const NivelPosicion = () => {
                           onClick={() => {
                             if (!modoMover) irAPosicion(pos.id, fila.numero_nivel, pos.numero_posicion)
                           }}
-                          className={`w-full p-3 rounded-lg border-2 text-left text-xs transition-all hover:scale-105 hover:shadow-lg hover:ring-2 hover:ring-offset-1 hover:ring-primary-400 ${ESTADO_COLORS[estadoVisual] || ESTADO_COLORS.Disponible} text-white font-medium ${modoMover && puedeArrastrar ? 'cursor-grab active:cursor-grabbing' : ''} ${modoMover ? 'cursor-default' : ''} ${enTransito?.posicionId === pos.id ? 'opacity-50 ring-2 ring-primary-400' : ''}`}
+                          className={`w-full p-2.5 rounded-lg border-2 text-left text-xs transition-all hover:scale-105 hover:shadow-lg hover:ring-2 hover:ring-offset-1 hover:ring-primary-400 ${colorFondoPosicion} text-white font-medium ${modoMover && puedeArrastrar ? 'cursor-grab active:cursor-grabbing' : ''} ${modoMover ? 'cursor-default' : ''} ${enTransito?.posicionId === pos.id ? 'opacity-50 ring-2 ring-primary-400' : ''} ${codigoRequerido ? 'ring-4 ring-yellow-300 dark:ring-yellow-300 ring-offset-2 ring-offset-white dark:ring-offset-gray-900 border-yellow-200 dark:border-yellow-300 shadow-[0_0_0_2px_rgba(253,224,71,0.6)]' : ''}`}
                           title={modoMover ? (puedeArrastrar ? 'Arrastre a otra posición para mover todos los productos' : tituloCelda) : tituloCelda}
                         >
-                        <div className="flex items-center gap-1.5 font-bold truncate mb-1" title={tituloCelda}>
+                        <div className="flex items-center gap-1.5 font-bold mb-1 whitespace-normal break-words leading-tight" title={tituloCelda}>
                           {esBloqueada && <Lock className="w-4 h-4 flex-shrink-0" />}
                           {modoMover && puedeArrastrar && <Move className="w-4 h-4 flex-shrink-0 opacity-90" />}
                           Posición {pos.numero_posicion}
                         </div>
                         {pos.estado !== 'Disponible' && (
                           <>
-                            <div className="mt-1 opacity-95 text-xs font-semibold truncate">
+                            <div className="mt-1 opacity-95 text-xs font-semibold whitespace-normal break-words leading-tight">
                               {pos.es_varios ? (
-                                <>Varios · {pos.producto_codigo || ''}</>
+                                <>
+                                  Varios ·{' '}
+                                  <span className={codigoRequerido ? 'inline-flex items-center px-1.5 py-0.5 rounded border border-yellow-300 dark:border-yellow-200 bg-yellow-100/95 dark:bg-yellow-900/50 text-yellow-900 dark:text-yellow-100 font-extrabold' : ''}>
+                                    {pos.producto_codigo || ''}
+                                  </span>
+                                </>
                               ) : (
-                                <>{pos.producto_codigo || ''} {pos.producto_nombre ? `- ${pos.producto_nombre}` : ''}</>
+                                <>
+                                  <span className={codigoRequerido ? 'inline-flex items-center px-1.5 py-0.5 rounded border border-yellow-300 dark:border-yellow-200 bg-yellow-100/95 dark:bg-yellow-900/50 text-yellow-900 dark:text-yellow-100 font-extrabold' : ''}>
+                                    {pos.producto_codigo || ''}
+                                  </span>
+                                  {pos.producto_nombre ? ` - ${pos.producto_nombre}` : ''}
+                                </>
                               )}
                             </div>
                             {pos.producto_descripcion && (
-                              <div className="mt-0.5 opacity-90 text-[10px] leading-tight line-clamp-2 truncate" title={pos.producto_descripcion}>
+                              <div className="mt-0.5 opacity-90 text-[10px] leading-tight whitespace-normal break-words" title={pos.producto_descripcion}>
                                 {pos.producto_descripcion}
                               </div>
                             )}
@@ -420,12 +593,35 @@ const NivelPosicion = () => {
                         {!modoMover && pos.estado !== 'Disponible' && !esBloqueada && (
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); setModalDespacho({ open: true, posicionId: pos.id }) }}
-                            className="absolute top-1 right-1 p-1.5 rounded bg-white/90 dark:bg-gray-800/90 text-primary-600 hover:bg-white dark:hover:bg-gray-800 shadow border border-gray-200 dark:border-gray-600"
-                            title="Agregar toda la posición al despacho"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (!posicionCompletaEnDespacho && !posicionParcialEnDespacho) setModalDespacho({ open: true, posicionId: pos.id })
+                            }}
+                            disabled={posicionCompletaEnDespacho || posicionParcialEnDespacho}
+                            className={`absolute top-1 right-1 p-1.5 rounded shadow border ${
+                              (posicionCompletaEnDespacho || posicionParcialEnDespacho)
+                                ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 cursor-not-allowed'
+                                : 'bg-white/90 dark:bg-gray-800/90 text-primary-600 hover:bg-white dark:hover:bg-gray-800 border-gray-200 dark:border-gray-600'
+                            }`}
+                            title={
+                              posicionCompletaEnDespacho
+                                ? 'Esta posición ya fue agregada completamente a un despacho'
+                                : posicionParcialEnDespacho
+                                ? 'Esta posición tiene saldo parcial en despacho. Agregue solo líneas pendientes.'
+                                : 'Agregar toda la posición al despacho'
+                            }
                           >
                             <Truck className="w-4 h-4" />
                           </button>
+                        )}
+                        {!modoMover && pos.estado !== 'Disponible' && !esBloqueada && (posicionCompletaEnDespacho || posicionParcialEnDespacho) && (
+                          <div className={`absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                            posicionCompletaEnDespacho
+                              ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700'
+                              : 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
+                          }`}>
+                            {posicionCompletaEnDespacho ? 'Agregado' : `Parcial (${despachadosItems}/${totalItems})`}
+                          </div>
                         )}
                       </div>
                     </td>
@@ -456,6 +652,14 @@ const NivelPosicion = () => {
             <span><strong>Naranja/Amarillo:</strong> Mixto (varios productos o lotes)</span>
           </span>
           <span className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+            <span className="w-5 h-5 rounded bg-blue-600 border-2 border-blue-700 dark:bg-blue-700 dark:border-blue-500 shadow-sm" />
+            <span><strong>Azul:</strong> Agregado a despacho (posición completa)</span>
+          </span>
+          <span className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+            <span className="w-5 h-5 rounded bg-sky-500 border-2 border-sky-600 dark:bg-sky-600 dark:border-sky-400 shadow-sm" />
+            <span><strong>Azul claro:</strong> Parcial en despacho</span>
+          </span>
+          <span className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
             <span className="w-5 h-5 rounded bg-slate-500 border-2 border-slate-600 dark:border-slate-500 shadow-sm flex items-center justify-center">
               <Lock className="w-3 h-3 text-white" />
             </span> 
@@ -484,6 +688,27 @@ const NivelPosicion = () => {
               ))}
             </select>
           </div>
+          {productosRequeridosDespacho.activa && (
+            <div className="text-xs px-2.5 py-2 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200">
+              OP {productosRequeridosDespacho.ordenProduccion || '-'}: solo codigos requeridos ({Array.from(productosRequeridosDespacho.codigos).join(', ')}).
+            </div>
+          )}
+          {despachoSeleccionado && (
+            <div className="text-xs px-2.5 py-2 rounded border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-900/20 text-sky-800 dark:text-sky-200">
+              {productosRequeridosDespacho.activa ? (
+                <>
+                  Vista previa: se agregarán <strong>{resumenAgregarPosicion.requeridos}</strong> línea(s)
+                  {resumenAgregarPosicion.omitidos > 0 && (
+                    <> y se omitirán <strong>{resumenAgregarPosicion.omitidos}</strong> no requerida(s): {resumenAgregarPosicion.codigosOmitidos.join(', ')}.</>
+                  )}
+                </>
+              ) : (
+                <>
+                  Vista previa: se agregarán <strong>{resumenAgregarPosicion.requeridos}</strong> línea(s) de la posición.
+                </>
+              )}
+            </div>
+          )}
           <div className="flex gap-2 pt-2">
             <button type="button" onClick={() => setModalDespacho({ open: false, posicionId: null })} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 font-medium">Cancelar</button>
             <button type="button" onClick={confirmarAgregarPosicionAlDespacho} disabled={!despachoSeleccionado || agregandoADespacho} className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg font-medium disabled:opacity-50">

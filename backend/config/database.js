@@ -38,3 +38,30 @@ export const testConnection = async () => {
     return false;
   }
 };
+
+/** Parihuelas con bultos decimales requieren NUMERIC en stock; si la BD sigue en INTEGER, se corrige al arrancar. */
+export async function ensureCantidadBultosNumeric() {
+  const targets = [
+    ['stock_posiciones', 'cantidad_bultos'],
+    ['movimiento_detalles', 'cantidad_bultos'],
+    ['despacho_detalles', 'cantidad_bultos'],
+  ];
+  for (const [table, column] of targets) {
+    try {
+      const r = await pool.query(
+        `SELECT data_type FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+        [table, column]
+      );
+      const dt = r.rows[0]?.data_type;
+      if (dt === 'integer' || dt === 'bigint' || dt === 'smallint') {
+        await pool.query(
+          `ALTER TABLE ${table} ALTER COLUMN ${column} TYPE NUMERIC(12,2) USING ${column}::numeric`
+        );
+        console.log(`[DB] ${table}.${column}: tipo ${dt} → NUMERIC(12,2) (bultos decimales)`);
+      }
+    } catch (e) {
+      console.warn(`[DB] No se pudo verificar/migrar ${table}.${column}:`, e.message);
+    }
+  }
+}

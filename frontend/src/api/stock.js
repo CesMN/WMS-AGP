@@ -22,6 +22,7 @@ export const stockApi = {
     const searchParams = new URLSearchParams()
     if (params.cliente_id) searchParams.set('cliente_id', params.cliente_id)
     if (params.especie_id) searchParams.set('especie_id', params.especie_id)
+    if (params.lote) searchParams.set('lote', params.lote)
     if (params.q) searchParams.set('q', params.q)
     if (params.almacen_id) searchParams.set('almacen_id', params.almacen_id)
     if (params.carril_id) searchParams.set('carril_id', params.carril_id)
@@ -30,4 +31,5 @@ export const stockApi = {
     const query = searchParams.toString()
     return axios.get(`/api/stock/lineas${query ? `?${query}` : ''}`)
   },
+  matrizLoteProduccion: () => axios.get('/api/stock/matriz-lote-produccion'),
 }

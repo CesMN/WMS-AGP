@@ -16,6 +16,22 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
+  /** Alineado con RBAC backend: rol efectivo «Administrador» (o legacy «admin»). */
+  const isAdmin = () => {
+    const role = String(user?.rol || '').toLowerCase()
+    return role === 'administrador' || role === 'admin'
+  }
+
+  const hasPermission = (resource, action = 'view') => {
+    const role = String(user?.rol || '').toLowerCase()
+    if (role === 'administrador' || role === 'admin') return true
+    const perms = user?.permissions || {}
+    const row = perms?.[resource] || { view: false, operate: false }
+    return action === 'operate' ? !!row.operate : !!row.view
+  }
+  const canView = (resource) => hasPermission(resource, 'view')
+  const canOperate = (resource) => hasPermission(resource, 'operate')
+
   useEffect(() => {
     const token = localStorage.getItem('token')
     if (token) {
@@ -69,7 +85,11 @@ export const AuthProvider = ({ children }) => {
     login,
     logout,
     loading,
-    isAuthenticated: !!user
+    isAuthenticated: !!user,
+    isAdmin,
+    hasPermission,
+    canView,
+    canOperate,
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
