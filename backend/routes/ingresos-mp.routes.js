@@ -9,6 +9,13 @@ import { emitirNotificacion } from '../utils/notificaciones.js';
 const router = express.Router();
 router.use(authenticateToken);
 
+async function ensureDescargaCertificadoProcedenciaColumn() {
+  await pool.query(
+    `ALTER TABLE descargas_materia_prima
+     ADD COLUMN IF NOT EXISTS certificado_procedencia_numero VARCHAR(120)`
+  );
+}
+
 // ========== LOTES DE PRODUCCIÓN ==========
 // Listar (rutas concretas antes de /:id)
 router.get('/lotes/list', async (req, res) => {
@@ -621,7 +628,10 @@ router.get('/vehiculos/list', async (req, res) => {
          LIMIT 1
        ) d_ultima ON true
        ${where}
-       ORDER BY vl.created_at DESC
+       ORDER BY
+         CASE WHEN TRIM(COALESCE(vl.numero_orden, '')) ~ '^[0-9]+$' THEN TRIM(vl.numero_orden)::INT ELSE 2147483647 END,
+         TRIM(COALESCE(vl.numero_orden, '')),
+         vl.created_at DESC
        LIMIT $${n} OFFSET $${n + 1}`,
       [...params, limitNum, offsetNum]
     );
@@ -672,30 +682,46 @@ router.post('/vehiculos', async (req, res) => {
 router.put('/vehiculos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { numero_orden, proveedor_id, proveedor_nombre, placas, cantidad_aproximada, especie_id, cliente_id, origen } = req.body;
+    const body = req.body || {};
+    const fields = [
+      'numero_orden',
+      'proveedor_id',
+      'proveedor_nombre',
+      'placas',
+      'cantidad_aproximada',
+      'especie_id',
+      'cliente_id',
+      'origen',
+    ];
+    const updates = [];
+    const values = [];
+    let n = 1;
+    for (const f of fields) {
+      if (!Object.prototype.hasOwnProperty.call(body, f)) continue;
+      if (f === 'cantidad_aproximada') {
+        updates.push(`${f} = $${n}`);
+        values.push(body[f] != null && body[f] !== '' ? Number(body[f]) : null);
+      } else if (f === 'numero_orden' || f === 'proveedor_nombre' || f === 'placas' || f === 'origen') {
+        updates.push(`${f} = $${n}`);
+        values.push(body[f] == null ? null : String(body[f]).trim());
+      } else {
+        updates.push(`${f} = $${n}`);
+        values.push(body[f] || null);
+      }
+      n++;
+    }
+    if (updates.length === 0) {
+      const row = await pool.query('SELECT * FROM vehiculos_lote WHERE id = $1', [id]);
+      if (row.rows.length === 0) return res.status(404).json({ message: 'Vehículo no encontrado' });
+      return res.json(row.rows[0]);
+    }
+    values.push(id);
     const result = await pool.query(
       `UPDATE vehiculos_lote SET
-         numero_orden = COALESCE($1, numero_orden),
-         proveedor_id = $2,
-         proveedor_nombre = $3,
-         placas = COALESCE($4, placas),
-         cantidad_aproximada = $5,
-         especie_id = $6,
-         cliente_id = $7,
-         origen = $8,
+         ${updates.join(', ')},
          updated_at = CURRENT_TIMESTAMP
-       WHERE id = $9 RETURNING *`,
-      [
-        numero_orden?.trim(),
-        proveedor_id ?? null,
-        proveedor_nombre?.trim() ?? null,
-        placas?.trim(),
-        cantidad_aproximada != null ? Number(cantidad_aproximada) : null,
-        especie_id ?? null,
-        cliente_id ?? null,
-        origen?.trim() ?? null,
-        id
-      ]
+       WHERE id = $${n} RETURNING *`,
+      values
     );
     if (result.rows.length === 0) return res.status(404).json({ message: 'Vehículo no encontrado' });
     res.json(result.rows[0]);
@@ -751,16 +777,21 @@ router.delete('/vehiculos/:id', checkPermission('ingresos_mp.vehiculos', 'operat
 // ========== DESCARGA MATERIA PRIMA (fase 1 + fase 2 winchas) ==========
 router.get('/descargas/list', async (req, res) => {
   try {
-    const { vehiculo_lote_id, estado, limit = 50, offset = 0 } = req.query;
+    await ensureDescargaCertificadoProcedenciaColumn();
+    const { vehiculo_lote_id, lote_produccion_id, estado, limit = 50, offset = 0 } = req.query;
     const limitNum = Math.min(parseInt(limit, 10) || 50, 500);
     const offsetNum = Math.max(0, parseInt(offset, 10) || 0);
     let where = 'WHERE 1=1';
     const params = [];
     let n = 1;
     if (vehiculo_lote_id) { where += ` AND d.vehiculo_lote_id = $${n}`; params.push(vehiculo_lote_id); n++; }
+    if (lote_produccion_id) { where += ` AND vl.lote_produccion_id = $${n}`; params.push(lote_produccion_id); n++; }
     if (estado) { where += ` AND d.estado = $${n}`; params.push(estado); n++; }
     const countResult = await pool.query(
-      `SELECT COUNT(*) AS total FROM descargas_materia_prima d ${where}`,
+      `SELECT COUNT(*) AS total
+       FROM descargas_materia_prima d
+       JOIN vehiculos_lote vl ON vl.id = d.vehiculo_lote_id
+       ${where}`,
       params
     );
     const total = parseInt(countResult.rows[0]?.total, 10) || 0;
@@ -848,12 +879,13 @@ router.post('/descargas', async (req, res) => {
 
 router.put('/descargas/:id', async (req, res) => {
   try {
+    await ensureDescargaCertificadoProcedenciaColumn();
     const { id } = req.params;
     const body = req.body;
     const fields = [
       'numero_guia_interna', 'fecha_descarga', 'especie_id', 'cliente_id',
       'ruc_proveedor', 'proveedor_razon_social', 'desembarcadero', 'origen', 'placas_vehiculo',
-      'ruc_transportista', 'datos_chofer', 'estado'
+      'ruc_transportista', 'datos_chofer', 'estado', 'certificado_procedencia_numero'
     ];
     const updates = [];
     const values = [];
@@ -892,6 +924,7 @@ router.put('/descargas/:id', async (req, res) => {
 
 router.get('/descargas/:id', async (req, res) => {
   try {
+    await ensureDescargaCertificadoProcedenciaColumn();
     const { id } = req.params;
     const desc = await pool.query(
       `SELECT d.*, vl.numero_orden, vl.placas AS vehiculo_placas, vl.lote_produccion_id,
@@ -1180,6 +1213,7 @@ router.post('/embarcaciones', async (req, res) => {
 // Listar descargas para validación (incluye lote para agrupar en front)
 router.get('/validacion/descargas', async (req, res) => {
   try {
+    await ensureDescargaCertificadoProcedenciaColumn();
     const { limit = 200, offset = 0 } = req.query;
     const limitNum = Math.min(parseInt(limit, 10) || 200, 500);
     const offsetNum = Math.max(0, parseInt(offset, 10) || 0);
@@ -1189,7 +1223,7 @@ router.get('/validacion/descargas', async (req, res) => {
       `SELECT d.id, d.vehiculo_lote_id, d.numero_guia_interna, d.fecha_descarga::date AS fecha_descarga, d.estado,
               d.placas_vehiculo, d.proveedor_razon_social, d.ruc_proveedor, d.desembarcadero, d.ruc_transportista,
               d.validated_at, d.validated_by,
-              vl.numero_orden, lp.id AS lote_id, lp.codigo AS lote_codigo, lp.fecha_creacion AS lote_fecha,
+              vl.numero_orden, lp.id AS lote_id, lp.codigo AS lote_codigo, lp.fecha_creacion AS lote_fecha, lp.estado AS lote_estado,
               COALESCE(cli.nombre, '') AS cliente_nombre, COALESCE(esp.nombre, '') AS especie_nombre
        FROM descargas_materia_prima d
        JOIN vehiculos_lote vl ON vl.id = d.vehiculo_lote_id
@@ -1245,7 +1279,7 @@ router.post('/descargas/:id/documentos-validacion', async (req, res) => {
   try {
     const { id } = req.params;
     const { tipo, wincha_id, nombre_archivo, content_type, contenido_base64 } = req.body;
-    const tipos = ['guia_interna', 'vehiculo', 'desembarcadero', 'transportista', 'wincha', 'guia_remitente', 'embarcacion', 'otros'];
+    const tipos = ['guia_interna', 'vehiculo', 'desembarcadero', 'transportista', 'certificado_procedencia', 'wincha', 'guia_remitente', 'embarcacion', 'otros'];
     if (!tipo || !tipos.includes(tipo)) {
       return res.status(400).json({ message: 'Tipo de documento inválido' });
     }

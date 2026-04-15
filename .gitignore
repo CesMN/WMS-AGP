@@ -29,3 +29,6 @@ Thumbs.db
 
 # Database
 *.sql.backup
+
+# Cloudflare tunnel binary (descargado por scripts/start-tunnel.ps1)
+scripts/.cloudflared/

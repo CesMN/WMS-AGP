@@ -59,7 +59,7 @@ function sanitizeDatosColumnasForDb(raw) {
     if (k == null || typeof k !== 'string') continue;
     const n = Number(v);
     if (!Number.isFinite(n) || n < 0) continue;
-    out[k] = Math.floor(n);
+    out[k] = Math.round(n * 10000) / 10000;
   }
   return out;
 }

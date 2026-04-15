@@ -66,7 +66,16 @@ body {
   overflow-x: auto;
 }
 .wms-table-scroll table {
-  min-width: min(640px, 100%);
+  min-width: 640px;
+}
+
+/* Wrapper explícito para tablas anchas en móviles */
+.wms-table-mobile {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.wms-table-mobile table {
+  min-width: max(640px, 100%);
 }
 
 #root {

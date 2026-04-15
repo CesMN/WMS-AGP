@@ -5,6 +5,8 @@
   "description": "Sistema WMS - backend y frontend en subcarpetas",
   "scripts": {
     "build": "cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install",
-    "start": "cd backend && node server.js"
+    "start": "cd backend && node server.js",
+    "tunnel": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-tunnel.ps1 -Port 5173",
+    "tunnel:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-tunnel.ps1 -Port 5000"
   }
 }

@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { exportMatrixVerticalPdf, exportMatrixExcelSingleSheet } from '../../utils/exportReport'
 import ExportMatrixModal from '../../components/ExportMatrixModal'
 import toast from 'react-hot-toast'
+import { parseBandejasValor } from '../../utils/parseBandejasValor'
 
 const MSJ_SIN_GUARDAR = 'Hay cambios sin guardar. ¿Salir sin guardar?'
 const MSJ_CAMBIO_PLANTILLA = 'Al cambiar la plantilla se perderá todo el progreso de este registro. ¿Continuar?'
@@ -91,6 +92,7 @@ const Congelado = () => {
   const [exporting, setExporting] = useState(null)
   const [openExport, setOpenExport] = useState(false)
   const [exportOrientation, setExportOrientation] = useState('portrait')
+  const [colWidths, setColWidths] = useState({})
 
   const setTipoColumna = (colId, tipo) => {
     setColumnas((prev) => prev.map((c) => (c.id === colId ? { ...c, tipo } : c)))
@@ -211,17 +213,71 @@ const Congelado = () => {
   }
 
   const setCantidad = (productoId, colId, value) => {
-    const num = Math.max(0, parseInt(value, 10) || 0)
+    const r = parseBandejasValor(value)
+    if (r.skip) return
     setCongeladoData((prev) => {
       if (!prev?.productos) return prev
-      const productos = prev.productos.map((p) =>
-        p.producto_id === productoId
-          ? { ...p, datos_columnas: { ...p.datos_columnas, [colId]: num } }
-          : p
-      )
+      const productos = prev.productos.map((p) => {
+        if (p.producto_id !== productoId) return p
+        const datos_columnas = { ...p.datos_columnas }
+        if (r.clear) delete datos_columnas[colId]
+        else datos_columnas[colId] = r.num
+        return { ...p, datos_columnas }
+      })
       return { ...prev, productos }
     })
     setDirty(true)
+  }
+
+  const handleGridArrowNav = (e, gridId, row, col, maxRow, maxCol) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (row >= maxRow) return
+      const nextRow = row + 1
+      const next = document.querySelector(`[data-grid="${gridId}"][data-row="${nextRow}"][data-col="${col}"]`)
+      if (next) {
+        next.focus()
+        if (typeof next.select === 'function') next.select()
+      }
+      return
+    }
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+    e.preventDefault()
+    let nextRow = row
+    let nextCol = col
+    if (e.key === 'ArrowUp') nextRow = Math.max(0, row - 1)
+    if (e.key === 'ArrowDown') nextRow = Math.min(maxRow, row + 1)
+    if (e.key === 'ArrowLeft') nextCol = Math.max(0, col - 1)
+    if (e.key === 'ArrowRight') nextCol = Math.min(maxCol, col + 1)
+    const next = document.querySelector(`[data-grid="${gridId}"][data-row="${nextRow}"][data-col="${nextCol}"]`)
+    if (next) {
+      next.focus()
+      if (typeof next.select === 'function') next.select()
+    }
+  }
+
+  const getClientX = (ev) => (ev?.touches?.length ? ev.touches[0].clientX : ev.clientX)
+  const startResize = (ev, key, min = 44, max = 420) => {
+    ev.preventDefault()
+    const startX = getClientX(ev)
+    const base = Number(colWidths[key] ?? min)
+    const onMove = (moveEv) => {
+      if (moveEv.cancelable) moveEv.preventDefault()
+      const clientX = getClientX(moveEv)
+      if (typeof clientX !== 'number') return
+      const width = Math.max(min, Math.min(max, Math.round(base + (clientX - startX))))
+      setColWidths((prev) => ({ ...prev, [key]: width }))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('touchend', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('touchend', onUp)
   }
 
   const handleGuardar = () => {
@@ -275,6 +331,11 @@ const Congelado = () => {
   }
 
   const readonly = congeladoData?.estado === 'finalizado'
+  const widthProducto = Number(colWidths.producto ?? 90)
+  const widthDetalle = Number(colWidths.detalle ?? 180)
+  const widthTotalB = Number(colWidths.totalB ?? 64)
+  const widthTotalKg = Number(colWidths.totalKg ?? 64)
+  const widthCol = (id) => Number(colWidths[`c-${id}`] ?? 52)
   const totalesPorFila = (producto) => {
     const datos = producto.datos_columnas || {}
     const totalBandejas = Object.entries(datos).reduce((s, [, v]) => s + (Number(v) || 0), 0)
@@ -434,7 +495,7 @@ const Congelado = () => {
                   key={lote.id}
                   type="button"
                   onClick={() => handleClickLote(lote)}
-                  className={`text-left px-4 py-2.5 rounded-xl border-2 min-w-[200px] transition-colors ${
+                  className={`text-left px-4 py-2.5 rounded-xl border-2 w-full sm:min-w-[200px] sm:w-auto transition-colors ${
                     selected
                       ? 'border-primary-500 bg-primary-500/20 dark:bg-primary-500/30 text-gray-900 dark:text-white'
                       : 'border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 hover:border-gray-300 dark:hover:border-gray-500'
@@ -496,7 +557,7 @@ const Congelado = () => {
                   Plantilla: {congeladoData.plantilla_titulo}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => setOpenExport(true)}
@@ -506,13 +567,13 @@ const Congelado = () => {
                   <FileText className="w-4 h-4" />
                   Exportar
                 </button>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                   <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">Otra plantilla:</label>
                   <select
                     value={congeladoData.plantilla_id}
                     onChange={handleCambiarPlantilla}
                     disabled={readonly || saving}
-                    className="px-3 py-1.5 border border-gray-300 dark:border-gray-500 rounded-lg text-sm min-w-[180px] bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
+                    className="min-h-[40px] px-3 py-1.5 border border-gray-300 dark:border-gray-500 rounded-lg text-sm w-full sm:w-auto sm:min-w-[180px] bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                   >
                     {plantillas.map((p) => (
                       <option key={p.id} value={p.id}>{p.titulo}</option>
@@ -523,7 +584,7 @@ const Congelado = () => {
                   <button
                     type="button"
                     onClick={agregarColumna}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-500"
+                    className="inline-flex items-center gap-1.5 min-h-[40px] px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-500"
                   >
                     <Plus className="w-4 h-4" />
                     Agregar columna
@@ -532,41 +593,54 @@ const Congelado = () => {
               </div>
             </div>
 
-            <div className="rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden">
-              <div className="overflow-x-auto" style={{ overflowX: 'auto' }}>
-                <table className="min-w-full text-sm border-collapse">
+            <div className="rounded-lg border border-gray-200 dark:border-gray-600">
+              <div className="px-3 py-1.5 text-[11px] text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/40">
+                Vista tipo hoja de cálculo: deslice horizontalmente para ver túneles/placas y totales.
+              </div>
+              <div className="wms-table-scroll wms-table-mobile" style={{ overflowX: 'auto' }}>
+                <table className="min-w-[50rem] md:min-w-[58rem] w-full text-sm border-separate border-spacing-0 table-fixed">
                   <colgroup>
-                    <col style={{ width: '90px' }} />
-                    <col style={{ width: '180px', minWidth: '160px' }} />
+                    <col style={{ width: `${widthProducto}px` }} />
+                    <col style={{ width: `${widthDetalle}px`, minWidth: `${Math.min(widthDetalle, 160)}px` }} />
+                    {columnas.map((col) => (
+                      <col key={`col-celda-${col.id}`} style={{ width: `${widthCol(col.id)}px`, minWidth: `${widthCol(col.id)}px`, maxWidth: `${widthCol(col.id)}px` }} />
+                    ))}
+                    <col style={{ width: `${widthTotalB}px`, minWidth: `${widthTotalB}px`, maxWidth: `${widthTotalB}px` }} />
+                    <col style={{ width: `${widthTotalKg}px`, minWidth: `${widthTotalKg}px`, maxWidth: `${widthTotalKg}px` }} />
                   </colgroup>
                   <thead>
                     <tr className="bg-gray-100 dark:bg-gray-700">
-                      <th rowSpan={2} className="px-2 py-2 text-left font-medium text-gray-900 dark:text-gray-100 sticky left-0 z-20 bg-gray-100 dark:bg-gray-700 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] align-middle" style={{ minWidth: '90px' }}>
+                      <th rowSpan={2} className="relative px-2 py-2 text-left text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static md:left-0 top-0 z-30 bg-gray-100 dark:bg-gray-700 border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] align-middle" style={{ minWidth: `${widthProducto}px` }}>
                         Producto
+                        <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'producto', 70, 260)} onTouchStart={(e) => startResize(e, 'producto', 70, 260)} />
                       </th>
-                      <th rowSpan={2} className="px-2 py-2 text-left font-medium text-gray-900 dark:text-gray-100 sticky z-20 bg-gray-100 dark:bg-gray-700 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] align-middle" style={{ left: '90px' }}>
+                      <th rowSpan={2} className="relative px-2 py-2 text-left text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static top-0 z-30 bg-gray-100 dark:bg-gray-700 border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] align-middle" style={{ left: `${widthProducto}px` }}>
                         Código · Descripción
+                        <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'detalle', 140, 420)} onTouchStart={(e) => startResize(e, 'detalle', 140, 420)} />
                       </th>
                       {columnas.map((col) => (
-                        <th key={`${col.id}-equipo`} className={`px-1 py-2 text-center text-xs font-semibold ${bgColumnaTipo(col.tipo)}`}>
+                        <th key={`${col.id}-equipo`} className={`relative px-1 py-2 text-center text-xs font-semibold md:sticky max-md:!static md:top-0 z-20 border-b border-r border-gray-200 dark:border-gray-600 ${bgColumnaTipo(col.tipo)}`} style={{ width: `${widthCol(col.id)}px` }}>
                           {etiquetaEquipoColumna(col)}
+                          <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, `c-${col.id}`, 44, 160)} onTouchStart={(e) => startResize(e, `c-${col.id}`, 44, 160)} />
                         </th>
                       ))}
-                      <th rowSpan={2} className="px-2 py-2 text-center font-medium text-gray-900 dark:text-gray-100 sticky z-20 bg-gray-50 dark:bg-gray-600 w-16 min-w-[4rem] shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)] align-middle" style={{ right: '5rem' }}>
+                      <th rowSpan={2} className="relative px-2 py-2 text-center text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static top-0 z-30 bg-gray-50 dark:bg-gray-600 border-b border-r border-gray-200 dark:border-gray-600 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)] align-middle" style={{ width: `${widthTotalB}px`, minWidth: `${widthTotalB}px`, right: `${widthTotalKg}px` }}>
                         Total B.
+                        <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'totalB', 56, 160)} onTouchStart={(e) => startResize(e, 'totalB', 56, 160)} />
                       </th>
-                      <th rowSpan={2} className="px-2 py-2 text-center font-medium text-gray-900 dark:text-gray-100 sticky right-0 z-20 bg-gray-50 dark:bg-gray-600 w-16 min-w-[4rem] shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)] align-middle">
+                      <th rowSpan={2} className="relative px-2 py-2 text-center text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static md:right-0 top-0 z-30 bg-gray-50 dark:bg-gray-600 border-b border-gray-200 dark:border-gray-600 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)] align-middle" style={{ width: `${widthTotalKg}px`, minWidth: `${widthTotalKg}px` }}>
                         Total kg
+                        <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'totalKg', 56, 160)} onTouchStart={(e) => startResize(e, 'totalKg', 56, 160)} />
                       </th>
                     </tr>
                     <tr className="bg-gray-100 dark:bg-gray-700">
                       {columnas.map((col) => (
-                        <th key={`${col.id}-hora`} className={`px-0 py-1 text-center w-14 ${bgColumnaTipo(col.tipo)}`}>
+                        <th key={`${col.id}-hora`} className={`px-0 py-1 text-center md:sticky max-md:!static md:top-[34px] z-20 border-b border-r border-gray-200 dark:border-gray-600 ${bgColumnaTipo(col.tipo)}`} style={{ width: `${widthCol(col.id)}px` }}>
                           <select
                             value={col.tipo}
                             onChange={(e) => setTipoColumna(col.id, e.target.value)}
                             disabled={readonly}
-                            className="w-full text-xs font-medium bg-transparent border-0 rounded py-0.5 text-gray-900 dark:text-gray-100 cursor-pointer"
+                            className="w-full text-[10px] font-medium bg-transparent border-0 rounded py-0 text-gray-900 dark:text-gray-100 cursor-pointer"
                           >
                             {TIPOS_CONGE.map((t) => (
                               <option key={t.value} value={t.value}>{t.label}</option>
@@ -590,7 +664,7 @@ const Congelado = () => {
                               onChange={(e) => setHoraInicioColumna(col.id, e.target.value)}
                               disabled={readonly}
                               title={`Inicio de congelado · Turno ${etiquetaTurnoDesdeHoraStr(horaInicioDesdeColumna(col))}`}
-                              className="w-full min-w-0 text-[11px] font-medium rounded border border-gray-300 dark:border-gray-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-0.5 px-0.5 [color-scheme:dark]"
+                              className="w-full min-w-0 text-[10px] font-medium rounded border border-gray-300 dark:border-gray-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-0 px-0.5 [color-scheme:dark]"
                             />
                             <div className="text-[9px] text-gray-600 dark:text-gray-400 mt-0.5 leading-tight">
                               {horaInicioDesdeColumna(col)} · {etiquetaTurnoDesdeHoraStr(horaInicioDesdeColumna(col))}
@@ -600,52 +674,103 @@ const Congelado = () => {
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-200 dark:divide-gray-600">
-                    {productosAgrupados().map(({ nombreProducto, productos }) =>
+                  <tbody>
+                    {(() => {
+                      let rowCursor = -1
+                      const maxRow = Math.max((congeladoData?.productos?.length || 1) - 1, 0)
+                      const maxCol = Math.max((columnas?.length || 0) + 3, 3)
+                      return productosAgrupados().map(({ nombreProducto, productos }) =>
                       productos.map((p, idx) => {
+                        rowCursor += 1
+                        const rowIndex = rowCursor
                         const { totalBandejas, totalKg } = totalesPorFila(p)
                         const linea = [p.codigo, p.descripcion, p.presentacion].filter(Boolean).join(' · ')
                         const isFirst = idx === 0
                         return (
-                          <tr key={p.producto_id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
+                          <tr key={p.producto_id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 odd:bg-white even:bg-gray-50/40 dark:odd:bg-gray-800 dark:even:bg-gray-800/70">
                             {isFirst ? (
-                              <td rowSpan={productos.length} className="px-2 py-1 align-top sticky left-0 z-10 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-medium shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]" style={{ minWidth: '90px' }}>
+                              <td
+                                rowSpan={productos.length}
+                                tabIndex={0}
+                                onKeyDown={(e) => handleGridArrowNav(e, 'congelado-grid', rowIndex, 0, maxRow, maxCol)}
+                                data-grid="congelado-grid"
+                                data-row={rowIndex}
+                                data-col={0}
+                                className="px-2 py-1 align-top md:sticky max-md:!static md:left-0 z-20 bg-inherit text-gray-800 dark:text-gray-200 font-medium border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                style={{ minWidth: `${widthProducto}px` }}
+                              >
                                 {nombreProducto}
                               </td>
                             ) : null}
-                            <td className="px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis sticky z-10 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]" style={{ left: '90px' }} title={linea}>
+                            <td
+                              tabIndex={0}
+                              onKeyDown={(e) => handleGridArrowNav(e, 'congelado-grid', rowIndex, 1, maxRow, maxCol)}
+                              data-grid="congelado-grid"
+                              data-row={rowIndex}
+                              data-col={1}
+                              className="px-2 py-1 whitespace-normal break-words md:whitespace-nowrap md:overflow-hidden md:text-ellipsis md:sticky max-md:!static z-20 bg-inherit text-gray-900 dark:text-gray-100 text-xs border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                              style={{ left: `${widthProducto}px` }}
+                              title={linea}
+                            >
                               {linea}
                             </td>
-                            {columnas.map((col) => (
-                              <td key={col.id} className={`px-0.5 py-0.5 w-14 ${bgColumnaTipo(col.tipo)}`}>
+                            {columnas.map((col, colIdx) => (
+                              <td key={col.id} className={`p-0 border-b border-r border-gray-200 dark:border-gray-600 ${bgColumnaTipo(col.tipo)}`} style={{ width: `${widthCol(col.id)}px` }}>
                                 <input
                                   type="number"
                                   min="0"
-                                  step="1"
-                                  value={(p.datos_columnas || {})[col.id] ?? ''}
+                                  step="any"
+                                  inputMode="decimal"
+                                  value={
+                                    (() => {
+                                      const v = (p.datos_columnas || {})[col.id]
+                                      return v === undefined || v === null ? '' : String(v)
+                                    })()
+                                  }
                                   onChange={(e) => setCantidad(p.producto_id, col.id, e.target.value)}
+                                  onKeyDown={(e) => handleGridArrowNav(e, 'congelado-grid', rowIndex, colIdx + 2, maxRow, maxCol)}
+                                  data-grid="congelado-grid"
+                                  data-row={rowIndex}
+                                  data-col={colIdx + 2}
                                   disabled={readonly}
-                                  className="w-11 h-7 text-center text-xs border border-gray-300 dark:border-gray-500 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                  className="w-full h-9 md:h-7 text-center text-sm md:text-xs border-0 rounded-none bg-transparent focus:bg-white dark:focus:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-primary-500 text-gray-900 dark:text-gray-100 tabular-nums"
                                 />
                               </td>
                             ))}
-                            <td className="px-2 py-1 text-center font-medium sticky z-10 bg-white dark:bg-gray-800 w-16 text-gray-900 dark:text-gray-100 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ right: '5rem' }}>
+                            <td
+                              tabIndex={0}
+                              onKeyDown={(e) => handleGridArrowNav(e, 'congelado-grid', rowIndex, (columnas?.length || 0) + 2, maxRow, maxCol)}
+                              data-grid="congelado-grid"
+                              data-row={rowIndex}
+                              data-col={(columnas?.length || 0) + 2}
+                              className="px-2 py-1 text-center font-medium tabular-nums md:sticky max-md:!static z-20 bg-inherit text-gray-900 dark:text-gray-100 border-b border-r border-gray-200 dark:border-gray-600 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                              style={{ width: `${widthTotalB}px`, right: `${widthTotalKg}px` }}
+                            >
                               {totalBandejas}
                             </td>
-                            <td className="px-2 py-1 text-center sticky right-0 z-10 bg-white dark:bg-gray-800 w-16 text-gray-900 dark:text-gray-100 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)]">
+                            <td
+                              tabIndex={0}
+                              onKeyDown={(e) => handleGridArrowNav(e, 'congelado-grid', rowIndex, (columnas?.length || 0) + 3, maxRow, maxCol)}
+                              data-grid="congelado-grid"
+                              data-row={rowIndex}
+                              data-col={(columnas?.length || 0) + 3}
+                              className="px-2 py-1 text-center tabular-nums md:sticky max-md:!static md:right-0 z-20 bg-inherit text-gray-900 dark:text-gray-100 border-b border-gray-200 dark:border-gray-600 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                              style={{ width: `${widthTotalKg}px` }}
+                            >
                               {totalKg.toFixed(1)}
                             </td>
                           </tr>
                         )
                       })
-                    )}
+                    )
+                    })()}
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-gray-400 dark:border-gray-500 bg-gray-200/90 dark:bg-gray-700/90 font-semibold text-gray-900 dark:text-gray-100">
                       <td
                         colSpan={2}
-                        className="px-2 py-2 text-left sticky left-0 z-10 bg-gray-200 dark:bg-gray-700 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.12)]"
-                        style={{ minWidth: '90px' }}
+                        className="px-2 py-2 text-left md:sticky max-md:!static md:left-0 z-10 bg-gray-200 dark:bg-gray-700 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.12)]"
+                        style={{ minWidth: `${widthProducto}px` }}
                       >
                         Total por bachada
                         <span className="block text-[10px] font-normal text-gray-600 dark:text-gray-400">
@@ -663,10 +788,10 @@ const Congelado = () => {
                           <div className="text-[9px] font-normal opacity-80">kg</div>
                         </td>
                       ))}
-                      <td className="px-2 py-2 text-center sticky z-10 bg-gray-200 dark:bg-gray-700 w-16 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ right: '5rem' }}>
+                      <td className="px-2 py-2 text-center md:sticky max-md:!static z-10 bg-gray-200 dark:bg-gray-700 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ width: `${widthTotalB}px`, right: `${widthTotalKg}px` }}>
                         {totalesGeneral().bandejas}
                       </td>
-                      <td className="px-2 py-2 text-center sticky right-0 z-10 bg-gray-200 dark:bg-gray-700 w-16 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)]">
+                      <td className="px-2 py-2 text-center md:sticky max-md:!static md:right-0 z-10 bg-gray-200 dark:bg-gray-700 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ width: `${widthTotalKg}px` }}>
                         {totalesGeneral().kg.toFixed(1)}
                       </td>
                     </tr>

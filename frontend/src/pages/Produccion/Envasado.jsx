@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { exportMatrixVerticalPdf, exportMatrixExcelSingleSheet } from '../../utils/exportReport'
 import ExportMatrixModal from '../../components/ExportMatrixModal'
 import toast from 'react-hot-toast'
+import { parseBandejasValor } from '../../utils/parseBandejasValor'
 
 const MSJ_SIN_GUARDAR = 'Hay cambios sin guardar. ¿Salir sin guardar?'
 const MSJ_CAMBIO_PLANTILLA = 'Al cambiar la plantilla se perderá todo el progreso de este registro. ¿Continuar?'
@@ -64,6 +65,7 @@ const Envasado = () => {
   const [exporting, setExporting] = useState(null)
   const [openExport, setOpenExport] = useState(false)
   const [exportOrientation, setExportOrientation] = useState('portrait')
+  const [colWidths, setColWidths] = useState({})
 
   /** Al cambiar la hora de una columna, migrar datos_horas de todas las filas (clave = hora) y marcar sucio. */
   const setHoraColumna = (colId, oldHora, nuevaHoraStr) => {
@@ -196,17 +198,71 @@ const Envasado = () => {
   }
 
   const setBandejas = (productoId, hora, value) => {
-    const num = Math.max(0, parseInt(value, 10) || 0)
+    const r = parseBandejasValor(value)
+    if (r.skip) return
     setEnvasadoData((prev) => {
       if (!prev?.productos) return prev
-      const productos = prev.productos.map((p) =>
-        p.producto_id === productoId
-          ? { ...p, datos_horas: { ...p.datos_horas, [String(hora)]: num } }
-          : p
-      )
+      const productos = prev.productos.map((p) => {
+        if (p.producto_id !== productoId) return p
+        const datos_horas = { ...p.datos_horas }
+        if (r.clear) delete datos_horas[String(hora)]
+        else datos_horas[String(hora)] = r.num
+        return { ...p, datos_horas }
+      })
       return { ...prev, productos }
     })
     setDirty(true)
+  }
+
+  const handleGridArrowNav = (e, gridId, row, col, maxRow, maxCol) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (row >= maxRow) return
+      const nextRow = row + 1
+      const next = document.querySelector(`[data-grid="${gridId}"][data-row="${nextRow}"][data-col="${col}"]`)
+      if (next) {
+        next.focus()
+        if (typeof next.select === 'function') next.select()
+      }
+      return
+    }
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+    e.preventDefault()
+    let nextRow = row
+    let nextCol = col
+    if (e.key === 'ArrowUp') nextRow = Math.max(0, row - 1)
+    if (e.key === 'ArrowDown') nextRow = Math.min(maxRow, row + 1)
+    if (e.key === 'ArrowLeft') nextCol = Math.max(0, col - 1)
+    if (e.key === 'ArrowRight') nextCol = Math.min(maxCol, col + 1)
+    const next = document.querySelector(`[data-grid="${gridId}"][data-row="${nextRow}"][data-col="${nextCol}"]`)
+    if (next) {
+      next.focus()
+      if (typeof next.select === 'function') next.select()
+    }
+  }
+
+  const getClientX = (ev) => (ev?.touches?.length ? ev.touches[0].clientX : ev.clientX)
+  const startResize = (ev, key, min = 44, max = 420) => {
+    ev.preventDefault()
+    const startX = getClientX(ev)
+    const base = Number(colWidths[key] ?? min)
+    const onMove = (moveEv) => {
+      if (moveEv.cancelable) moveEv.preventDefault()
+      const clientX = getClientX(moveEv)
+      if (typeof clientX !== 'number') return
+      const width = Math.max(min, Math.min(max, Math.round(base + (clientX - startX))))
+      setColWidths((prev) => ({ ...prev, [key]: width }))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('touchend', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('touchend', onUp)
   }
 
   const handleGuardar = () => {
@@ -259,6 +315,11 @@ const Envasado = () => {
   }
 
   const readonly = envasadoData?.estado === 'finalizado'
+  const widthProducto = Number(colWidths.producto ?? 90)
+  const widthDetalle = Number(colWidths.detalle ?? 180)
+  const widthTotalB = Number(colWidths.totalB ?? 64)
+  const widthTotalKg = Number(colWidths.totalKg ?? 64)
+  const widthHora = (id) => Number(colWidths[`h-${id}`] ?? 52)
   const horasExport = (columnasHoras || []).map((col) => ({
     key: `h_${col.hora}`,
     label: `${String(col.hora).padStart(2, '0')}:00`,
@@ -394,7 +455,7 @@ const Envasado = () => {
                   key={lote.id}
                   type="button"
                   onClick={() => handleClickLote(lote)}
-                  className={`text-left px-4 py-2.5 rounded-xl border-2 min-w-[200px] transition-colors ${
+                  className={`text-left px-4 py-2.5 rounded-xl border-2 w-full sm:min-w-[200px] sm:w-auto transition-colors ${
                     selected
                       ? 'border-primary-500 bg-primary-500/20 dark:bg-primary-500/30 text-gray-900 dark:text-white'
                       : 'border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 hover:border-gray-300 dark:hover:border-gray-500'
@@ -456,7 +517,7 @@ const Envasado = () => {
                     Plantilla: {envasadoData.plantilla_titulo}
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                   <button
                     type="button"
                     onClick={() => setOpenExport(true)}
@@ -466,13 +527,13 @@ const Envasado = () => {
                     <FileText className="w-4 h-4" />
                     Exportar
                   </button>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                     <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">Otra plantilla:</label>
                     <select
                       value={envasadoData.plantilla_id}
                       onChange={handleCambiarPlantilla}
                       disabled={readonly || saving}
-                      className="px-3 py-1.5 border border-gray-300 dark:border-gray-500 rounded-lg text-sm min-w-[180px] bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
+                      className="min-h-[40px] px-3 py-1.5 border border-gray-300 dark:border-gray-500 rounded-lg text-sm w-full sm:w-auto sm:min-w-[180px] bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                     >
                       {plantillas.map((p) => (
                         <option key={p.id} value={p.id}>{p.titulo}</option>
@@ -483,7 +544,7 @@ const Envasado = () => {
                     <button
                       type="button"
                       onClick={agregarColumnaHora}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-500"
+                      className="inline-flex items-center gap-1.5 min-h-[40px] px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-500"
                     >
                       <Plus className="w-4 h-4" />
                       Agregar columna
@@ -492,83 +553,151 @@ const Envasado = () => {
                 </div>
               </div>
 
-              <div className="rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden">
-                <div className="overflow-x-auto" style={{ overflowX: 'auto' }}>
-                  <table className="min-w-full text-sm border-collapse">
+              <div className="rounded-lg border border-gray-200 dark:border-gray-600">
+                <div className="px-3 py-1.5 text-[11px] text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/40">
+                  Vista tipo hoja de cálculo: deslice horizontalmente para ver todas las horas y totales.
+                </div>
+                <div className="wms-table-scroll wms-table-mobile" style={{ overflowX: 'auto' }}>
+                  <table className="min-w-[52rem] md:min-w-[76rem] w-full text-sm border-separate border-spacing-0 table-fixed">
                     <colgroup>
-                      <col style={{ width: '90px' }} />
-                      <col style={{ width: '180px', minWidth: '160px' }} />
+                      <col style={{ width: `${widthProducto}px` }} />
+                      <col style={{ width: `${widthDetalle}px`, minWidth: `${Math.min(widthDetalle, 160)}px` }} />
+                      {columnasHoras.map((col) => (
+                        <col key={`col-h-${col.id}`} style={{ width: `${widthHora(col.id)}px`, minWidth: `${widthHora(col.id)}px`, maxWidth: `${widthHora(col.id)}px` }} />
+                      ))}
+                      <col style={{ width: `${widthTotalB}px`, minWidth: `${widthTotalB}px`, maxWidth: `${widthTotalB}px` }} />
+                      <col style={{ width: `${widthTotalKg}px`, minWidth: `${widthTotalKg}px`, maxWidth: `${widthTotalKg}px` }} />
                     </colgroup>
                     <thead>
                       <tr className="bg-gray-100 dark:bg-gray-700">
-                        <th className="px-2 py-2 text-left font-medium text-gray-900 dark:text-gray-100 sticky left-0 z-20 bg-gray-100 dark:bg-gray-700 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" style={{ minWidth: '90px' }}>
+                        <th className="relative px-2 py-2 text-left text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static top-0 z-30 bg-gray-100 dark:bg-gray-700 border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" style={{ left: '0px', minWidth: `${widthProducto}px` }}>
                           Producto
+                          <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'producto', 70, 260)} onTouchStart={(e) => startResize(e, 'producto', 70, 260)} />
                         </th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-900 dark:text-gray-100 sticky z-20 bg-gray-100 dark:bg-gray-700 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" style={{ left: '90px' }}>
+                        <th className="relative px-2 py-2 text-left text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static top-0 z-30 bg-gray-100 dark:bg-gray-700 border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" style={{ left: `${widthProducto}px` }}>
                           Código · Descripción
+                          <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'detalle', 140, 420)} onTouchStart={(e) => startResize(e, 'detalle', 140, 420)} />
                         </th>
                         {columnasHoras.map((col) => (
-                          <th key={col.id} className="px-0 py-1 text-center w-12 bg-gray-100 dark:bg-gray-700">
+                          <th key={col.id} className="relative px-0 py-1 text-center bg-gray-100 dark:bg-gray-700 md:sticky max-md:!static md:top-0 z-20 border-b border-r border-gray-200 dark:border-gray-600" style={{ width: `${widthHora(col.id)}px` }}>
                             <select
                               value={col.hora}
                               onChange={(e) => setHoraColumna(col.id, col.hora, e.target.value)}
                               disabled={readonly}
-                              className="w-full text-xs font-medium bg-white dark:bg-gray-600 border-0 rounded py-0.5 text-gray-900 dark:text-gray-100 cursor-pointer"
+                              className="w-full text-[11px] font-semibold bg-white dark:bg-gray-600 border-0 rounded py-0.5 text-gray-900 dark:text-gray-100 cursor-pointer"
                               title={`${col.hora}:00 — Turno ${turnoHora(col.hora)}`}
                             >
                               {HORAS_OPCIONES.map((h) => (
                                 <option key={h} value={h}>{h}:00 {turnoHora(h)}</option>
                               ))}
                             </select>
+                            <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, `h-${col.id}`, 44, 140)} onTouchStart={(e) => startResize(e, `h-${col.id}`, 44, 140)} />
                           </th>
                         ))}
-                        <th className="px-2 py-2 text-center font-medium text-gray-900 dark:text-gray-100 sticky z-20 bg-gray-50 dark:bg-gray-600 w-16 min-w-[4rem] shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ right: '5rem' }}>
+                        <th className="relative px-2 py-2 text-center text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static top-0 z-30 bg-gray-50 dark:bg-gray-600 border-b border-r border-gray-200 dark:border-gray-600 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ width: `${widthTotalB}px`, minWidth: `${widthTotalB}px`, right: `${widthTotalKg}px` }}>
                           Total B.
+                          <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'totalB', 56, 160)} onTouchStart={(e) => startResize(e, 'totalB', 56, 160)} />
                         </th>
-                        <th className="px-2 py-2 text-center font-medium text-gray-900 dark:text-gray-100 sticky right-0 z-20 bg-gray-50 dark:bg-gray-600 w-16 min-w-[4rem] shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)]">
+                        <th className="relative px-2 py-2 text-center text-[11px] font-semibold text-gray-900 dark:text-gray-100 md:sticky max-md:!static md:right-0 top-0 z-30 bg-gray-50 dark:bg-gray-600 border-b border-gray-200 dark:border-gray-600 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ width: `${widthTotalKg}px`, minWidth: `${widthTotalKg}px` }}>
                           Total kg
+                          <div className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none" onMouseDown={(e) => startResize(e, 'totalKg', 56, 160)} onTouchStart={(e) => startResize(e, 'totalKg', 56, 160)} />
                         </th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-200 dark:divide-gray-600">
+                    <tbody>
+                      {(() => {
+                        let rowCursor = -1
+                        const maxRow = Math.max((envasadoData?.productos?.length || 1) - 1, 0)
+                        const maxCol = Math.max((columnasHoras?.length || 0) + 3, 3)
+                        return (
+                      <>
                       {productosAgrupados().map(({ nombreProducto, productos }) =>
                         productos.map((p, idx) => {
+                          rowCursor += 1
+                          const rowIndex = rowCursor
                           const { totalBandejas, totalKg } = totalesPorFila(p)
                           const linea = [p.codigo, p.descripcion, p.presentacion].filter(Boolean).join(' · ')
                           const isFirst = idx === 0
                           return (
-                            <tr key={p.producto_id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
+                            <tr key={p.producto_id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 odd:bg-white even:bg-gray-50/40 dark:odd:bg-gray-800 dark:even:bg-gray-800/70">
                               {isFirst ? (
-                                <td rowSpan={productos.length} className="px-2 py-1 align-center sticky left-0 z-10 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 text-x shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]" style={{ minWidth: '90px' }}>
+                                <td
+                                  rowSpan={productos.length}
+                                  tabIndex={0}
+                                  onKeyDown={(e) => handleGridArrowNav(e, 'envasado-grid', rowIndex, 0, maxRow, maxCol)}
+                                  data-grid="envasado-grid"
+                                  data-row={rowIndex}
+                                  data-col={0}
+                                  className="px-2 py-1 align-center md:sticky max-md:!static z-20 bg-inherit text-gray-800 dark:text-gray-200 text-xs border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                  style={{ left: '0px', minWidth: `${widthProducto}px` }}
+                                >
                                   {nombreProducto}
                                 </td>
                               ) : null}
-                              <td className="px-2 py-1 whitespace-nowrap overflow-hidden text-ellipsis sticky z-10 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]" style={{ left: '90px' }} title={linea}>
+                              <td
+                                tabIndex={0}
+                                onKeyDown={(e) => handleGridArrowNav(e, 'envasado-grid', rowIndex, 1, maxRow, maxCol)}
+                                data-grid="envasado-grid"
+                                data-row={rowIndex}
+                                data-col={1}
+                                className="px-2 py-1 whitespace-normal break-words md:whitespace-nowrap md:overflow-hidden md:text-ellipsis md:sticky max-md:!static z-20 bg-inherit text-gray-900 dark:text-gray-100 text-xs border-b border-r border-gray-200 dark:border-gray-600 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                style={{ left: `${widthProducto}px` }}
+                                title={linea}
+                              >
                                 {linea}
                               </td>
-                              {columnasHoras.map((col) => (
-                                <td key={col.id} className="px-0.5 py-0.5 w-12">
+                              {columnasHoras.map((col, colIdx) => (
+                                <td key={col.id} className="p-0 border-b border-r border-gray-200 dark:border-gray-600" style={{ width: `${widthHora(col.id)}px` }}>
                                   <input
                                     type="number"
                                     min="0"
-                                    step="1"
-                                    value={(p.datos_horas || {})[String(col.hora)] ?? ''}
+                                    step="any"
+                                    inputMode="decimal"
+                                    value={
+                                      (() => {
+                                        const v = (p.datos_horas || {})[String(col.hora)]
+                                        return v === undefined || v === null ? '' : String(v)
+                                      })()
+                                    }
                                     onChange={(e) => setBandejas(p.producto_id, col.hora, e.target.value)}
+                                    onKeyDown={(e) => handleGridArrowNav(e, 'envasado-grid', rowIndex, colIdx + 2, maxRow, maxCol)}
+                                    data-grid="envasado-grid"
+                                    data-row={rowIndex}
+                                    data-col={colIdx + 2}
                                     disabled={readonly}
-                                    className="w-11 h-7 text-center text-xs border border-gray-300 dark:border-gray-500 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    className="w-full h-9 md:h-8 text-center text-sm md:text-xs border-0 rounded-none bg-transparent focus:bg-white dark:focus:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-primary-500 text-gray-900 dark:text-gray-100 tabular-nums"
                                   />
                                 </td>
                               ))}
-                              <td className="px-2 py-1 text-center font-medium sticky z-10 bg-white dark:bg-gray-800 w-16 text-gray-900 dark:text-gray-100 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)]" style={{ right: '5rem' }}>
+                              <td
+                                tabIndex={0}
+                                onKeyDown={(e) => handleGridArrowNav(e, 'envasado-grid', rowIndex, (columnasHoras?.length || 0) + 2, maxRow, maxCol)}
+                                data-grid="envasado-grid"
+                                data-row={rowIndex}
+                                data-col={(columnasHoras?.length || 0) + 2}
+                                className="px-2 py-1 text-center font-medium tabular-nums md:sticky max-md:!static z-20 bg-inherit text-gray-900 dark:text-gray-100 border-b border-r border-gray-200 dark:border-gray-600 shadow-[4px_0_6px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                style={{ width: `${widthTotalB}px`, right: `${widthTotalKg}px` }}
+                              >
                                 {totalBandejas}
                               </td>
-                              <td className="px-2 py-1 text-center sticky right-0 z-10 bg-white dark:bg-gray-800 w-16 text-gray-900 dark:text-gray-100 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)]">
+                              <td
+                                tabIndex={0}
+                                onKeyDown={(e) => handleGridArrowNav(e, 'envasado-grid', rowIndex, (columnasHoras?.length || 0) + 3, maxRow, maxCol)}
+                                data-grid="envasado-grid"
+                                data-row={rowIndex}
+                                data-col={(columnasHoras?.length || 0) + 3}
+                                className="px-2 py-1 text-center tabular-nums md:sticky max-md:!static md:right-0 z-20 bg-inherit text-gray-900 dark:text-gray-100 border-b border-gray-200 dark:border-gray-600 shadow-[2px_0_6px_-2px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                style={{ width: `${widthTotalKg}px` }}
+                              >
                                 {totalKg.toFixed(1)}
                               </td>
                             </tr>
                           )
                         })
                       )}
+                      </>
+                        )
+                      })()}
                     </tbody>
                   </table>
                 </div>

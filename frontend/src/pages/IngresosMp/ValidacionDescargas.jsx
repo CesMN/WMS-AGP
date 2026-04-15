@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom'
 import { FileCheck, Loader2, Upload, Trash2, FileText, ChevronRight, Eye } from 'lucide-react'
 import { ingresosMpApi } from '../../api/ingresos-mp'
 import { useAuth } from '../../contexts/AuthContext'
+import { useConfig } from '../../contexts/ConfigContext'
+import { traducirLoteAFecha } from '../../utils/traducirLoteAFecha'
 import toast from 'react-hot-toast'
 
 const TIPOS_DOCUMENTO = [
@@ -10,6 +12,7 @@ const TIPOS_DOCUMENTO = [
   { key: 'vehiculo', label: 'Vehículo', plural: true },
   { key: 'desembarcadero', label: 'Desembarcadero', plural: false },
   { key: 'transportista', label: 'Transportista', plural: false },
+  { key: 'certificado_procedencia', label: 'Certificado de procedencia', plural: false },
   { key: 'wincha', label: 'Winchas', plural: true, porWincha: true },
   { key: 'guia_remitente', label: 'Guías de remitente', plural: true, porWincha: true },
   { key: 'embarcacion', label: 'Embarcaciones', plural: true, porWincha: true },
@@ -21,6 +24,7 @@ const formatDate = (d) => (d ? new Date(d).toLocaleDateString('es-PE', { day: '2
 export default function ValidacionDescargas() {
   const [searchParams] = useSearchParams()
   const { isAdmin } = useAuth()
+  const { lotRepublicanoAnos } = useConfig()
   const [loading, setLoading] = useState(true)
   const [descargas, setDescargas] = useState([])
   const [selected, setSelected] = useState(null)
@@ -28,6 +32,11 @@ export default function ValidacionDescargas() {
   const [documentos, setDocumentos] = useState([])
   const [loadingDetalle, setLoadingDetalle] = useState(false)
   const [validando, setValidando] = useState(false)
+  const [savingCertificadoNumero, setSavingCertificadoNumero] = useState(false)
+  const [filtroFecha, setFiltroFecha] = useState('')
+  const [filtroUsuario, setFiltroUsuario] = useState('')
+  const [filtroEspecie, setFiltroEspecie] = useState('')
+  const [filtroEstado, setFiltroEstado] = useState('en_proceso')
 
   useEffect(() => {
     let cancelled = false
@@ -54,21 +63,48 @@ export default function ValidacionDescargas() {
     if (d) setSelected(d)
   }, [descargaIdFromUrl, descargas])
 
+  const especiesFiltro = useMemo(() => {
+    const s = new Set(descargas.map((d) => (d.especie_nombre || '').trim()).filter(Boolean))
+    return Array.from(s).sort((a, b) => a.localeCompare(b, 'es'))
+  }, [descargas])
+
+  const descargasFiltradas = useMemo(() => {
+    return descargas.filter((d) => {
+      const fechaDesc = d.fecha_descarga ? new Date(d.fecha_descarga).toISOString().slice(0, 10) : ''
+      const loteEstado = String(d.lote_estado || '').toLowerCase().trim()
+      if (filtroFecha && fechaDesc !== filtroFecha) return false
+      if (filtroEspecie && (d.especie_nombre || '') !== filtroEspecie) return false
+      if (filtroUsuario && !(d.validated_by || '').toLowerCase().includes(filtroUsuario.toLowerCase().trim())) return false
+      if (filtroEstado === 'en_proceso' && loteEstado !== 'en proceso' && loteEstado !== 'iniciado') return false
+      if (filtroEstado === 'validadas' && !d.validated_at) return false
+      if (filtroEstado === 'pendientes' && d.validated_at) return false
+      if (filtroEstado === 'lote_terminado' && loteEstado !== 'terminado') return false
+      return true
+    })
+  }, [descargas, filtroFecha, filtroUsuario, filtroEspecie, filtroEstado])
+
   const porLote = useMemo(() => {
     const map = new Map()
-    for (const d of descargas) {
+    for (const d of descargasFiltradas) {
       const key = d.lote_id || d.lote_codigo || 'sin-lote'
       if (!map.has(key)) {
         map.set(key, {
           lote_codigo: d.lote_codigo || 'Sin lote',
           lote_fecha: d.lote_fecha,
+          lote_estado: d.lote_estado || '—',
           items: [],
         })
       }
       map.get(key).items.push(d)
     }
     return Array.from(map.entries()).map(([id, g]) => ({ id, ...g }))
-  }, [descargas])
+  }, [descargasFiltradas])
+
+  useEffect(() => {
+    if (!selected) return
+    const stillVisible = descargasFiltradas.some((d) => d.id === selected.id)
+    if (!stillVisible) setSelected(descargasFiltradas[0] || null)
+  }, [descargasFiltradas, selected])
 
   useEffect(() => {
     if (!selected) {
@@ -150,6 +186,20 @@ export default function ValidacionDescargas() {
       .finally(() => setValidando(false))
   }
 
+  const guardarNumeroCertificado = async (valor) => {
+    if (!selected?.id) return
+    try {
+      setSavingCertificadoNumero(true)
+      await ingresosMpApi.descargaActualizar(selected.id, { certificado_procedencia_numero: valor || null })
+      setDetalle((prev) => (prev ? { ...prev, certificado_procedencia_numero: valor || '' } : prev))
+      toast.success('Número de certificado guardado')
+    } catch {
+      toast.error('No se pudo guardar el número de certificado')
+    } finally {
+      setSavingCertificadoNumero(false)
+    }
+  }
+
   const [reabriendoValidacion, setReabriendoValidacion] = useState(false)
   const handleReabrirValidacion = () => {
     if (!selected) return
@@ -188,12 +238,19 @@ export default function ValidacionDescargas() {
     { label: 'Especie', value: detalle?.especie_nombre, tipo: null },
     { label: 'Cliente', value: detalle?.cliente_nombre, tipo: null },
     { label: 'Placas vehículo', value: detalle?.placas_vehiculo, tipo: 'vehiculo' },
+    {
+      label: 'Lote',
+      value: detalle?.lote_codigo,
+      subvalue: detalle ? traducirLoteAFecha(detalle.lote_codigo, lotRepublicanoAnos) : null,
+      tipo: null,
+    },
     { label: 'Proveedor', value: detalle?.proveedor_razon_social, tipo: null },
     { label: 'RUC proveedor', value: detalle?.ruc_proveedor, tipo: null },
     { label: 'Desembarcadero', value: detalle?.desembarcadero, tipo: 'desembarcadero' },
     { label: 'Origen', value: detalle?.origen, tipo: null },
     { label: 'RUC transportista', value: detalle?.ruc_transportista, tipo: 'transportista' },
     { label: 'Datos chofer', value: detalle?.datos_chofer, tipo: null },
+    { label: 'Certificado de procedencia', value: detalle?.certificado_procedencia_numero, tipo: 'certificado_procedencia' },
     { label: 'Otros documentos', value: null, tipo: 'otros' },
   ]
   const mitad = Math.ceil(filasDatos.length / 2)
@@ -216,9 +273,9 @@ export default function ValidacionDescargas() {
   }, [detalle, documentos])
 
   const ChipDoc = ({ doc, puedeEliminar }) => (
-    <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-100 dark:bg-gray-700 text-sm text-gray-800 dark:text-gray-200">
+    <div className="flex items-center gap-1.5 px-2 py-1.5 rounded bg-gray-100 dark:bg-gray-700 text-sm text-gray-800 dark:text-gray-200 w-full">
       <FileText className="w-3.5 h-3.5 shrink-0" />
-      {doc.nombre_archivo}
+      <span className="truncate flex-1" title={doc.nombre_archivo}>{doc.nombre_archivo}</span>
       <button type="button" onClick={() => verDocumento(doc.id)} className="p-0.5 text-primary-600 dark:text-primary-400 hover:bg-primary-100 dark:hover:bg-primary-900/30 rounded" title="Ver documento">
         <Eye className="w-3.5 h-3.5" />
       </button>
@@ -227,7 +284,7 @@ export default function ValidacionDescargas() {
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       )}
-    </span>
+    </div>
   )
 
   if (loading) {
@@ -248,6 +305,57 @@ export default function ValidacionDescargas() {
         Descargas agrupadas por lote. Seleccione una descarga para revisar los datos y adjuntar documentos (PDF o foto), luego valide.
       </p>
 
+      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-3 sm:p-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Fecha descarga</label>
+            <input
+              type="date"
+              value={filtroFecha}
+              onChange={(e) => setFiltroFecha(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Usuario validador</label>
+            <input
+              type="text"
+              value={filtroUsuario}
+              onChange={(e) => setFiltroUsuario(e.target.value)}
+              placeholder="Ej. Leonardo"
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Especie</label>
+            <select
+              value={filtroEspecie}
+              onChange={(e) => setFiltroEspecie(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+            >
+              <option value="">Todas</option>
+              {especiesFiltro.map((esp) => (
+                <option key={esp} value={esp}>{esp}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Estado</label>
+            <select
+              value={filtroEstado}
+              onChange={(e) => setFiltroEstado(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm"
+            >
+              <option value="en_proceso">Lotes en proceso</option>
+              <option value="pendientes">Validación pendiente</option>
+              <option value="validadas">Validación completada</option>
+              <option value="lote_terminado">Lotes terminados</option>
+              <option value="todos">Todos</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-col lg:flex-row gap-4">
         {/* Lista por lote */}
         <div className="lg:w-96 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden flex-shrink-0">
@@ -260,8 +368,8 @@ export default function ValidacionDescargas() {
             ) : (
               porLote.map((grupo) => (
                 <div key={grupo.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
-                  <div className="px-4 py-2 bg-gray-50 dark:bg-gray-700/30 text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wide">
-                    Lote {grupo.lote_codigo} · {formatDate(grupo.lote_fecha)}
+                  <div className="px-4 py-2.5 bg-blue-100/80 dark:bg-blue-900/35 text-xs font-semibold text-blue-900 dark:text-blue-200 uppercase tracking-wide border-l-4 border-blue-500">
+                    Lote {grupo.lote_codigo} · {formatDate(grupo.lote_fecha)} · {grupo.lote_estado || '—'}
                   </div>
                   {grupo.items.map((d) => (
                     <button
@@ -275,7 +383,7 @@ export default function ValidacionDescargas() {
                       }`}
                     >
                       <span className="truncate text-sm">
-                        {d.numero_guia_interna || 'Sin guía'} · {d.cliente_nombre || '—'} · {d.especie_nombre || '—'}
+                        {(d.cliente_nombre || '—')} - {(d.especie_nombre || '—')} - Carro {d.numero_orden || 's/n'}
                       </span>
                       {d.validated_at ? (
                         <span className="shrink-0 text-xs text-green-600 dark:text-green-400 font-medium">Validado</span>
@@ -314,10 +422,36 @@ export default function ValidacionDescargas() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0">
                   {[col1, col2].map((column, idx) => (
                     <ul key={idx} className="space-y-1 text-sm">
-                      {column.map(({ label, value, tipo }) => (
+                      {column.map(({ label, value, tipo, subvalue }) => (
                         <li key={label} className="flex flex-wrap items-center gap-2 py-2 border-b border-gray-100 dark:border-gray-700/50">
                           <span className="text-gray-500 dark:text-gray-400 shrink-0 w-32">{label}:</span>
-                          <span className="text-gray-900 dark:text-white break-words min-w-0 flex-1">{value || '—'}</span>
+                          {tipo === 'certificado_procedencia' && !detalle.validated_at ? (
+                            <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={detalle?.certificado_procedencia_numero || ''}
+                                onChange={(e) => setDetalle((prev) => (prev ? { ...prev, certificado_procedencia_numero: e.target.value } : prev))}
+                                placeholder="Ingrese N° de certificado"
+                                className="w-full sm:w-[280px] px-2.5 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => guardarNumeroCertificado(detalle?.certificado_procedencia_numero || '')}
+                                disabled={savingCertificadoNumero}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-50"
+                              >
+                                {savingCertificadoNumero ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                                Guardar
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-gray-900 dark:text-white break-words min-w-0 flex-1">
+                              {value || '—'}
+                              {subvalue ? (
+                                <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-normal">{subvalue}</span>
+                              ) : null}
+                            </span>
+                          )}
                           {tipo && !detalle.validated_at && (
                             <>
                               <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 text-xs cursor-pointer hover:opacity-90 shrink-0">
@@ -325,14 +459,20 @@ export default function ValidacionDescargas() {
                                 Subir
                                 <input type="file" accept=".pdf,image/*" className="hidden" onChange={(e) => handleFile(tipo, null, e)} />
                               </label>
-                              {docsByTipo(tipo, null).map((doc) => (
-                                <ChipDoc key={doc.id} doc={doc} puedeEliminar />
-                              ))}
+                              <div className="w-full flex flex-col gap-1.5 mt-1">
+                                {docsByTipo(tipo, null).map((doc) => (
+                                  <ChipDoc key={doc.id} doc={doc} puedeEliminar />
+                                ))}
+                              </div>
                             </>
                           )}
-                          {tipo && detalle.validated_at && docsByTipo(tipo, null).map((doc) => (
-                            <ChipDoc key={doc.id} doc={doc} puedeEliminar={false} />
-                          ))}
+                          {tipo && detalle.validated_at && (
+                            <div className="w-full flex flex-col gap-1.5 mt-1">
+                              {docsByTipo(tipo, null).map((doc) => (
+                                <ChipDoc key={doc.id} doc={doc} puedeEliminar={false} />
+                              ))}
+                            </div>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -346,8 +486,13 @@ export default function ValidacionDescargas() {
                   <ul className="space-y-2 text-sm">
                     {detalle.winchas.map((w) => (
                       <li key={w.id} className="px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-700/50 flex flex-wrap items-center gap-2">
-                        <span className="text-gray-900 dark:text-gray-100 shrink-0">
-                          Wincha {w.numero_wincha || '—'} · {w.nombre_embarcacion || w.matricula_embarcacion || '—'} · Guía remitente: {w.numero_guia_remitente || '—'} · {w.peso_kg ?? '—'} kg · {w.cajas ?? '—'} cajas
+                        <span className="text-gray-900 dark:text-gray-100 min-w-[240px]">
+                          <span className="block">
+                            Wincha {w.numero_wincha || '—'} · Emb.: {w.nombre_embarcacion || '—'}
+                            {w.matricula_embarcacion ? ` · Mat.: ${w.matricula_embarcacion}` : ''}
+                          </span>
+                          <span className="block">· Guía remitente: {w.numero_guia_remitente || '—'}</span>
+                          <span className="block">· W: {w.peso_kg ?? '—'} kg · {w.cajas ?? '—'} cajas</span>
                         </span>
                         {!detalle.validated_at && (
                           <>
@@ -355,16 +500,18 @@ export default function ValidacionDescargas() {
                               const t = TIPOS_DOCUMENTO.find((x) => x.key === tipo)
                               const docs = docsByTipo(tipo, w.id)
                               return (
-                                <span key={tipo} className="inline-flex items-center gap-1.5 flex-wrap">
+                                <div key={tipo} className="w-full sm:w-auto flex flex-col gap-1.5">
                                   <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 text-xs cursor-pointer hover:opacity-90">
                                     <Upload className="w-3 h-3" />
                                     {t?.label}
                                     <input type="file" accept=".pdf,image/*" className="hidden" onChange={(e) => handleFile(tipo, w.id, e)} />
                                   </label>
-                                  {docs.map((doc) => (
-                                    <ChipDoc key={doc.id} doc={doc} puedeEliminar />
-                                  ))}
-                                </span>
+                                  <div className="flex flex-col gap-1">
+                                    {docs.map((doc) => (
+                                      <ChipDoc key={doc.id} doc={doc} puedeEliminar />
+                                    ))}
+                                  </div>
+                                </div>
                               )
                             })}
                           </>

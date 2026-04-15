@@ -61,7 +61,7 @@ const LotesProduccion = () => {
   const [modalOpen, setModalOpen] = useState(false)
   const [editando, setEditando] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [filtroEstado, setFiltroEstado] = useState('')
+  const [filtroEstado, setFiltroEstado] = useState('En proceso')
   const [formData, setFormData] = useState({
     codigo: '',
     estado: 'Registrado',
@@ -325,7 +325,8 @@ const LotesProduccion = () => {
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+        <div className="wms-table-scroll">
+        <table className="min-w-[64rem] w-full divide-y divide-gray-200 dark:divide-gray-700">
           <thead className="bg-gray-50 dark:bg-gray-700">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Código</th>
@@ -398,6 +399,7 @@ const LotesProduccion = () => {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {list.length > 0 && (

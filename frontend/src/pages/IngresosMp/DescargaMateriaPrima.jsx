@@ -1,20 +1,30 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Fragment } from 'react'
-import { Download, Plus, Loader2, Package, ChevronDown, ChevronRight, Eye, Pencil, Trash2, FileCheck, Clock, Truck, ClipboardCheck } from 'lucide-react'
+import { Download, Plus, Loader2, Package, ChevronDown, ChevronRight, Eye, Pencil, Trash2, FileCheck, Clock, Truck, ClipboardCheck, FileText, FileSpreadsheet } from 'lucide-react'
 import Modal from '../../components/Modal'
+import ExportMatrixModal from '../../components/ExportMatrixModal'
 import PaginationBar from '../../components/PaginationBar'
 import { ingresosMpApi } from '../../api/ingresos-mp'
 import { especiesApi } from '../../api/especies'
 import { clientesApi } from '../../api/clientes'
 import { useConfig } from '../../contexts/ConfigContext'
 import { useAuth } from '../../contexts/AuthContext'
+import { traducirLoteAFecha } from '../../utils/traducirLoteAFecha'
+import {
+  DESCARGA_WINCHAS_EXPORT_COLUMNS,
+  buildDescargaLoteExportRows,
+  exportDescargaLoteWinchasExcel,
+  exportDescargaLoteWinchasPdf,
+  exportDescargaWinchasExcel,
+  exportDescargaWinchasPdf,
+} from '../../utils/descargaMpExport'
 import toast from 'react-hot-toast'
 
 const DescargaMateriaPrima = () => {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const { registrosPorPagina } = useConfig()
+  const { registrosPorPagina, lotRepublicanoAnos, nombreEmpresa } = useConfig()
   const { isAdmin } = useAuth()
   const [list, setList] = useState([])
   const [total, setTotal] = useState(0)
@@ -25,6 +35,7 @@ const DescargaMateriaPrima = () => {
   const [especies, setEspecies] = useState([])
   const [clientes, setClientes] = useState([])
   const [filtroEstado, setFiltroEstado] = useState('')
+  const [filtroLote, setFiltroLote] = useState('')
   const [expandedId, setExpandedId] = useState(null)
   const [expandedWinchas, setExpandedWinchas] = useState(null)
   const [modalFase1Open, setModalFase1Open] = useState(false)
@@ -35,6 +46,13 @@ const DescargaMateriaPrima = () => {
   const [descargaSeleccionada, setDescargaSeleccionada] = useState(null)
   const [editandoWincha, setEditandoWincha] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [openExportLote, setOpenExportLote] = useState(false)
+  const [preparandoExportLote, setPreparandoExportLote] = useState(false)
+  const [exportandoLote, setExportandoLote] = useState(null)
+  const [exportLoteOrientation, setExportLoteOrientation] = useState('landscape')
+  const [loteExportRows, setLoteExportRows] = useState([])
+  const [loteExportDetalles, setLoteExportDetalles] = useState([])
+  const [loteExportCodigo, setLoteExportCodigo] = useState('')
   const [formFase1, setFormFase1] = useState({
     vehiculo_lote_id: '',
     numero_guia_interna: '',
@@ -78,11 +96,24 @@ const DescargaMateriaPrima = () => {
     return () => { cancelled = true }
   }, [])
 
+  const lotesOpciones = Array.from(
+    new Map((vehiculos || []).map((v) => [v.lote_produccion_id, { id: v.lote_produccion_id, codigo: v.lote_codigo, estado: v.lote_estado }])).values()
+  ).filter((l) => !!l.id)
+
+  const lotesActivos = lotesOpciones.filter((l) => l.estado === 'Iniciado' || l.estado === 'En proceso')
+
+  useEffect(() => {
+    if (filtroLote) return
+    if (lotesActivos.length === 0) return
+    setFiltroLote(lotesActivos[0].id)
+  }, [filtroLote, lotesActivos])
+
   useEffect(() => {
     let cancelled = false
     const limit = registrosPorPagina || 50
     setLoading(true)
     const params = { limit, offset: Number(offset) }
+    if (filtroLote) params.lote_produccion_id = filtroLote
     if (filtroEstado) params.estado = filtroEstado
     ingresosMpApi
       .descargasListar(params)
@@ -100,7 +131,7 @@ const DescargaMateriaPrima = () => {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [offset, registrosPorPagina, refreshKey, filtroEstado])
+  }, [offset, registrosPorPagina, refreshKey, filtroEstado, filtroLote])
 
   const descargaIdFromUrl = searchParams.get('descarga_id')
   useEffect(() => {
@@ -497,6 +528,79 @@ const DescargaMateriaPrima = () => {
     }
   }
 
+  const totalDescargadoVisibleKg = list.reduce((acc, item) => acc + (Number(item.total_descargado) || 0), 0)
+
+  const loteExportColumns = DESCARGA_WINCHAS_EXPORT_COLUMNS.map((c) => ({ key: c.key, label: c.label }))
+
+  const prepararExportResumenLote = async () => {
+    if (!filtroLote) {
+      toast.error('Seleccione un lote para exportar su resumen')
+      return
+    }
+    setPreparandoExportLote(true)
+    try {
+      // Todo el lote: no se filtra por estado.
+      const { data } = await ingresosMpApi.descargasListar({
+        lote_produccion_id: filtroLote,
+        limit: 500,
+        offset: 0,
+      })
+      const descargas = data?.data ?? data ?? []
+      if (!Array.isArray(descargas) || descargas.length === 0) {
+        toast.error('No hay descargas en el lote seleccionado')
+        return
+      }
+      const detalles = await Promise.all(
+        descargas.map((d) => ingresosMpApi.descargaObtener(d.id).then((r) => r.data).catch(() => null))
+      )
+      const detailsOk = detalles.filter(Boolean)
+      const rows = buildDescargaLoteExportRows(detailsOk)
+      if (rows.length === 0) {
+        toast.error('No hay winchas para exportar en el lote seleccionado')
+        return
+      }
+      const lote = lotesOpciones.find((l) => String(l.id) === String(filtroLote))
+      setLoteExportCodigo(lote?.codigo || '—')
+      setLoteExportDetalles(detailsOk)
+      setLoteExportRows(rows)
+      setOpenExportLote(true)
+    } catch {
+      toast.error('Error al preparar exportación del lote')
+    } finally {
+      setPreparandoExportLote(false)
+    }
+  }
+
+  const exportarLoteExcel = () => {
+    if (!loteExportDetalles.length) return
+    setExportandoLote('excel')
+    try {
+      exportDescargaLoteWinchasExcel(loteExportDetalles, { loteCodigo: loteExportCodigo })
+      toast.success('Excel del lote descargado')
+    } catch {
+      toast.error('No se pudo exportar Excel del lote')
+    } finally {
+      setExportandoLote(null)
+    }
+  }
+
+  const exportarLotePdf = () => {
+    if (!loteExportDetalles.length) return
+    setExportandoLote('pdf')
+    try {
+      exportDescargaLoteWinchasPdf(loteExportDetalles, {
+        loteCodigo: loteExportCodigo,
+        appName: nombreEmpresa,
+        orientation: exportLoteOrientation,
+      })
+      toast.success('PDF del lote descargado')
+    } catch {
+      toast.error('No se pudo exportar PDF del lote')
+    } finally {
+      setExportandoLote(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -521,7 +625,20 @@ const DescargaMateriaPrima = () => {
         </button>
       </div>
 
-      <div className="mb-4 flex gap-2 items-center">
+      <div className="mb-4 flex gap-2 items-center flex-wrap">
+        <label className="text-sm text-gray-600 dark:text-gray-400">Lote:</label>
+        <select
+          value={filtroLote}
+          onChange={(e) => setFiltroLote(e.target.value)}
+          className="px-3 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg bg-white text-gray-900"
+        >
+          <option value="">Todos</option>
+          {lotesOpciones.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.codigo} ({l.estado || '—'})
+            </option>
+          ))}
+        </select>
         <label className="text-sm text-gray-600 dark:text-gray-400">Estado:</label>
         <select
           value={filtroEstado}
@@ -532,10 +649,21 @@ const DescargaMateriaPrima = () => {
           <option value="Descargando">Descargando</option>
           <option value="Completado">Completado</option>
         </select>
+        <button
+          type="button"
+          onClick={prepararExportResumenLote}
+          disabled={!filtroLote || preparandoExportLote}
+          className="inline-flex items-center gap-2 px-3 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+          title="Exporta el resumen completo de winchas del lote seleccionado"
+        >
+          {preparandoExportLote ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          Resumen lote (PDF/Excel)
+        </button>
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-600 overflow-hidden shadow-sm">
-        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-600">
+        <div className="wms-table-scroll">
+        <table className="min-w-[76rem] w-full divide-y divide-gray-200 dark:divide-gray-600">
           <thead className="bg-gray-50 dark:bg-gray-700">
             <tr>
               <th className="w-10 px-2 py-3"></th>
@@ -624,6 +752,7 @@ const DescargaMateriaPrima = () => {
                                 <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">N° wincha</th>
                                 <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Guía remitente</th>
                                 <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Embarcación</th>
+                                <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Matrícula</th>
                                 <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Hora inicio / final</th>
                                 <th className="px-3 py-2 text-right text-gray-700 dark:text-gray-200">Peso (kg)</th>
                                 <th className="px-3 py-2 text-right text-gray-700 dark:text-gray-200">Cajas</th>
@@ -637,7 +766,8 @@ const DescargaMateriaPrima = () => {
                                 <tr key={w.id} className="border-t border-gray-200 dark:border-gray-600 text-gray-900 dark:text-gray-100">
                                   <td className="px-3 py-2">{w.numero_wincha || '—'}</td>
                                   <td className="px-3 py-2">{w.numero_guia_remitente || '—'}</td>
-                                  <td className="px-3 py-2">{w.nombre_embarcacion || w.matricula_embarcacion || '—'}</td>
+                                  <td className="px-3 py-2">{w.nombre_embarcacion || '—'}</td>
+                                  <td className="px-3 py-2">{w.matricula_embarcacion || '—'}</td>
                                   <td className="px-3 py-2">{w.hora_inicio || '—'} / {w.hora_final || '—'}</td>
                                   <td className="px-3 py-2 text-right">{w.peso_kg != null ? w.peso_kg : '—'}</td>
                                   <td className="px-3 py-2 text-right">{w.cajas != null ? w.cajas : '—'}</td>
@@ -658,7 +788,7 @@ const DescargaMateriaPrima = () => {
                             </tbody>
                             <tfoot className="bg-gray-100 dark:bg-gray-700 font-semibold text-gray-900 dark:text-gray-100">
                               <tr>
-                                <td colSpan={4} className="px-3 py-2 text-right">Total:</td>
+                                <td colSpan={5} className="px-3 py-2 text-right">Total:</td>
                                 <td className="px-3 py-2 text-right">{expandedWinchas.reduce((s, w) => s + (Number(w.peso_kg) || 0), 0).toFixed(2)}</td>
                                 <td className="px-3 py-2 text-right">{expandedWinchas.reduce((s, w) => s + (Number(w.cajas) || 0), 0)}</td>
                                 {item.estado !== 'Completado' && <td></td>}
@@ -676,10 +806,19 @@ const DescargaMateriaPrima = () => {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {list.length > 0 && (
-        <div className="mt-4 px-4 py-3 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-600">
+        <div className="mt-4 px-4 py-3 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-600 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span className="text-gray-500 dark:text-gray-400">
+              Total descargado (filtro actual):
+            </span>
+            <span className="font-semibold text-gray-900 dark:text-gray-100 tabular-nums">
+              {totalDescargadoVisibleKg.toFixed(2)} kg
+            </span>
+          </div>
           <PaginationBar total={total} limit={registrosPorPagina || 50} offset={offset} onPageChange={setOffset} />
         </div>
       )}
@@ -874,7 +1013,19 @@ const DescargaMateriaPrima = () => {
               <div><span className="text-gray-500 dark:text-gray-400">Cliente:</span> {detallesData.cliente_nombre || '—'}</div>
               <div><span className="text-gray-500 dark:text-gray-400">Especie:</span> {detallesData.especie_nombre || '—'}</div>
               <div><span className="text-gray-500 dark:text-gray-400">Placas:</span> {detallesData.placas_vehiculo || detallesData.vehiculo_placas || '—'}</div>
-              <div><span className="text-gray-500 dark:text-gray-400">Lote:</span> {detallesData.lote_codigo || '—'}</div>
+              <div>
+                {(() => {
+                  const fechaTradLote = traducirLoteAFecha(detallesData.lote_codigo, lotRepublicanoAnos)
+                  return (
+                    <>
+                      <span className="text-gray-500 dark:text-gray-400">Lote:</span> {detallesData.lote_codigo || '—'}
+                      {fechaTradLote ? (
+                        <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{fechaTradLote}</div>
+                      ) : null}
+                    </>
+                  )
+                })()}
+              </div>
               <div><span className="text-gray-500 dark:text-gray-400">Proveedor:</span> {detallesData.proveedor_razon_social || '—'}</div>
               <div><span className="text-gray-500 dark:text-gray-400">RUC proveedor:</span> {detallesData.ruc_proveedor || '—'}</div>
               <div><span className="text-gray-500 dark:text-gray-400">Desembarcadero:</span> {detallesData.desembarcadero || '—'}</div>
@@ -893,6 +1044,7 @@ const DescargaMateriaPrima = () => {
                         <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">N° wincha</th>
                         <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Guía remitente</th>
                         <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Embarcación</th>
+                        <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Matrícula</th>
                         <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-200">Hora inicio / final</th>
                         <th className="px-3 py-2 text-right text-gray-700 dark:text-gray-200">Peso (kg)</th>
                         <th className="px-3 py-2 text-right text-gray-700 dark:text-gray-200">Cajas</th>
@@ -906,7 +1058,8 @@ const DescargaMateriaPrima = () => {
                         <tr key={w.id} className="border-t border-gray-200 dark:border-gray-600">
                           <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{w.numero_wincha || '—'}</td>
                           <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{w.numero_guia_remitente || '—'}</td>
-                          <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{w.nombre_embarcacion || w.matricula_embarcacion || '—'}</td>
+                          <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{w.nombre_embarcacion || '—'}</td>
+                          <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{w.matricula_embarcacion || '—'}</td>
                           <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{w.hora_inicio || '—'} / {w.hora_final || '—'}</td>
                           <td className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">{w.peso_kg != null ? w.peso_kg : '—'}</td>
                           <td className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">{w.cajas != null ? w.cajas : '—'}</td>
@@ -927,7 +1080,7 @@ const DescargaMateriaPrima = () => {
                     </tbody>
                     <tfoot className="bg-gray-100 dark:bg-gray-700 font-semibold">
                       <tr>
-                        <td colSpan={4} className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">Total:</td>
+                        <td colSpan={5} className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">Total:</td>
                         <td className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">{detallesData.winchas.reduce((s, w) => s + (Number(w.peso_kg) || 0), 0).toFixed(2)} kg</td>
                         <td className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">{detallesData.winchas.reduce((s, w) => s + (Number(w.cajas) || 0), 0)} cajas</td>
                         {detallesData.estado !== 'Completado' && <td></td>}
@@ -1017,14 +1170,71 @@ const DescargaMateriaPrima = () => {
                 })()}
               </div>
             )}
-            {detallesData.estado === 'Completado' && isAdmin() && (
-              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600 flex justify-end">
-                <button type="button" onClick={() => reabrirDescarga(detallesData)} className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700" title="Reabrir descarga (solo Admin)">Reabrir descarga</button>
+            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600 flex flex-wrap items-center gap-2 justify-between">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      exportDescargaWinchasExcel(detallesData)
+                      toast.success(detallesData?.winchas?.length ? 'Excel descargado' : 'Excel descargado (solo encabezados, sin winchas)')
+                    } catch {
+                      toast.error('No se pudo exportar Excel')
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700"
+                  title="Una fila por wincha; primera fila son títulos, listo para pegar en planilla"
+                >
+                  <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                  Exportar Excel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!detallesData?.winchas?.length) {
+                      toast.error('No hay winchas para exportar')
+                      return
+                    }
+                    try {
+                      exportDescargaWinchasPdf(detallesData, { appName: nombreEmpresa })
+                      toast.success('PDF descargado')
+                    } catch {
+                      toast.error('No se pudo exportar PDF')
+                    }
+                  }}
+                  disabled={!detallesData?.winchas?.length}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Tabla de winchas en PDF"
+                >
+                  <FileText className="w-4 h-4 shrink-0" />
+                  Exportar PDF
+                </button>
               </div>
-            )}
+              {detallesData.estado === 'Completado' && isAdmin() && (
+                <button type="button" onClick={() => reabrirDescarga(detallesData)} className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700" title="Reabrir descarga (solo Admin)">Reabrir descarga</button>
+              )}
+            </div>
           </div>
         )}
       </Modal>
+      <ExportMatrixModal
+        isOpen={openExportLote}
+        onClose={() => setOpenExportLote(false)}
+        title={`Resumen descarga lote ${loteExportCodigo || ''}`.trim()}
+        rows={loteExportRows}
+        columns={loteExportColumns}
+        orientation={exportLoteOrientation}
+        onChangeOrientation={setExportLoteOrientation}
+        exporting={exportandoLote}
+        onExportPdf={() => {
+          exportarLotePdf()
+          setOpenExportLote(false)
+        }}
+        onExportExcel={() => {
+          exportarLoteExcel()
+          setOpenExportLote(false)
+        }}
+      />
     </div>
   )
 }

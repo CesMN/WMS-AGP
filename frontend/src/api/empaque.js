@@ -7,6 +7,7 @@ export const empaqueApi = {
   obtener: (id) => axios.get(`/api/empaque/${id}`),
   iniciar: (loteId) => axios.post('/api/empaque', { lote_id: loteId }),
   actualizar: (id, data) => axios.put(`/api/empaque/${id}`, data),
+  enviarPlanillaRecepcion: (id) => axios.post(`/api/empaque/${id}/enviar-planilla-recepcion`),
   finalizar: (id) => axios.post(`/api/empaque/${id}/finalizar`),
   reabrir: (id) => axios.patch(`/api/empaque/${id}/reabrir`),
 }

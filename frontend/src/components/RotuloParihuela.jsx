@@ -72,6 +72,7 @@ const RotuloParihuela = ({ parihuelaId, onClose, clienteNombre, especieNombre })
     const qrImg = qrDataUrl ? `<img src="${qrDataUrl.replace(/"/g, '&quot;')}" alt="QR" class="qr-img" />` : '<div class="qr-placeholder">QR</div>'
     const logoImg = logoEmpresa && logoEmpresa.trim() ? `<img src="${esc(logoEmpresa)}" alt="Logo" class="logo-img" />` : ''
     const empresa = (nombreEmpresa && nombreEmpresa.trim()) ? esc(nombreEmpresa) : ''
+    const imprimirA4 = Boolean(esRecepcionada && data?.ubicacion)
 
     const ubicacionHtml = (esRecepcionada && data.ubicacion)
       ? `<div class="rotulo-ubicacion"><span class="rotulo-ubicacion-label">UBICACIÓN:</span><br/><span class="rotulo-ubicacion-valor">${esc(data.ubicacion)}</span></div>`
@@ -91,6 +92,8 @@ const RotuloParihuela = ({ parihuelaId, onClose, clienteNombre, especieNombre })
       <html>
         <head><title>Rótulo Parihuela</title>
           <style>
+            @page { size: ${imprimirA4 ? 'A4 landscape' : 'auto'}; margin: ${imprimirA4 ? '8mm' : '12mm'}; }
+            html, body { margin: 0; padding: 0; }
             body { font-family: Arial, sans-serif; padding: 16px; max-width: 480px; margin: 0; }
             .rotulo { border: 2px solid #222; padding: 16px; }
             .rotulo-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
@@ -108,16 +111,39 @@ const RotuloParihuela = ({ parihuelaId, onClose, clienteNombre, especieNombre })
             .rotulo-contenido-titulo { text-align: center; text-decoration: underline; font-weight: bold; margin: 12px 0 8px 0; font-size: 15px; }
             .rotulo-cliente { margin: 8px 0; font-size: 14px; }
             .rotulo-cliente strong { margin-right: 6px; }
-            .rotulo-tabla { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+            .rotulo-tabla { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; margin: 8px 0; }
             .rotulo-tabla th, .rotulo-tabla td { border: 1px solid #333; padding: 6px 8px; text-align: left; vertical-align: top; }
             .rotulo-tabla th { background: #eee; font-weight: bold; }
-            .td-producto { max-width: 220px; }
+            .td-producto { width: 50%; overflow-wrap: anywhere; word-break: break-word; }
             .td-lote { white-space: nowrap; }
             .td-num { text-align: right; white-space: nowrap; }
             .rotulo-total { margin-top: 10px; font-size: 16px; font-weight: bold; }
+            body.modo-a4 { padding: 0; max-width: none; width: 100%; min-height: 100vh; }
+            body.modo-a4 .rotulo {
+              width: 100%;
+              min-height: calc(100vh - 16mm);
+              box-sizing: border-box;
+              padding: 12mm;
+              display: flex;
+              flex-direction: column;
+              justify-content: flex-start;
+            }
+            body.modo-a4 .rotulo-header { margin-bottom: 16px; }
+            body.modo-a4 .rotulo-titulo h1 { font-size: 34px; letter-spacing: 0.5px; }
+            body.modo-a4 .rotulo-qr { width: 120px; height: 120px; }
+            body.modo-a4 .rotulo-logo .logo-img { max-height: 70px; max-width: 180px; }
+            body.modo-a4 .rotulo-logo .logo-empresa { font-size: 14px; }
+            body.modo-a4 .rotulo-ubicacion-label { font-size: 18px; }
+            body.modo-a4 .rotulo-ubicacion-valor { font-size: 30px; line-height: 1.2; }
+            body.modo-a4 .rotulo-contenido-titulo { font-size: 20px; margin: 10px 0; }
+            body.modo-a4 .rotulo-cliente { font-size: 18px; margin: 8px 0 10px; }
+            body.modo-a4 .rotulo-tabla { font-size: 14px; }
+            body.modo-a4 .rotulo-tabla th, body.modo-a4 .rotulo-tabla td { padding: 8px 10px; }
+            body.modo-a4 .rotulo-tabla .td-producto { font-size: 20px; line-height: 1.25; font-weight: 700; }
+            body.modo-a4 .rotulo-total { margin-top: 14px; font-size: 24px; }
           </style>
         </head>
-        <body>
+        <body class="${imprimirA4 ? 'modo-a4' : ''}">
           <div class="rotulo">
             <div class="rotulo-header">
               <div class="rotulo-qr">${qrImg}</div>
@@ -128,6 +154,12 @@ const RotuloParihuela = ({ parihuelaId, onClose, clienteNombre, especieNombre })
             <div class="rotulo-contenido-titulo">CONTENIDO</div>
             <div class="rotulo-cliente"><strong>CLIENTE:</strong> ${esc(clienteDisplay)}</div>
             <table class="rotulo-tabla">
+              <colgroup>
+                <col style="width:50%" />
+                <col style="width:16.66%" />
+                <col style="width:16.67%" />
+                <col style="width:16.67%" />
+              </colgroup>
               <thead>
                 <tr><th>PRODUCTO</th><th>LOTE</th><th>BULTOS</th><th>CANTIDAD KG</th></tr>
               </thead>
@@ -158,7 +190,7 @@ const RotuloParihuela = ({ parihuelaId, onClose, clienteNombre, especieNombre })
       )}
       {!loading && !error && data && (
         <>
-          <div ref={printRef} className="rounded-lg border-2 border-gray-300 dark:border-gray-600 p-4 bg-white text-gray-900 max-w-md">
+          <div ref={printRef} className="w-full rounded-lg border-2 border-gray-300 dark:border-gray-600 p-3 bg-white text-gray-900 max-w-md overflow-hidden">
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="flex-shrink-0 w-20 h-20 border border-gray-400 flex items-center justify-center bg-white">
                 {qrDataUrl ? <img src={qrDataUrl} alt="QR" className="w-full h-full object-contain" /> : <span className="text-gray-400 text-sm">QR</span>}
@@ -179,22 +211,22 @@ const RotuloParihuela = ({ parihuelaId, onClose, clienteNombre, especieNombre })
             )}
             <p className="text-center font-bold underline my-2">CONTENIDO</p>
             <p className="text-sm mb-2"><span className="font-bold">CLIENTE:</span> {clienteDisplay}</p>
-            <table className="w-full text-xs border border-gray-600 border-collapse">
+            <table className="w-full text-xs border border-gray-600 border-collapse table-fixed">
               <thead>
                 <tr className="bg-gray-200">
-                  <th className="border border-gray-600 px-2 py-1 text-left">PRODUCTO</th>
-                  <th className="border border-gray-600 px-2 py-1 text-left">LOTE</th>
-                  <th className="border border-gray-600 px-2 py-1 text-right">BULTOS</th>
-                  <th className="border border-gray-600 px-2 py-1 text-right">CANTIDAD KG</th>
+                  <th className="w-[50%] border border-gray-600 px-1.5 py-1 text-left text-[10px] leading-tight">PRODUCTO</th>
+                  <th className="w-[16.66%] border border-gray-600 px-1.5 py-1 text-left text-[10px] leading-tight">LOTE</th>
+                  <th className="w-[16.67%] border border-gray-600 px-1.5 py-1 text-right text-[10px] leading-tight">BULTOS</th>
+                  <th className="w-[16.67%] border border-gray-600 px-1.5 py-1 text-right text-[10px] leading-tight">CANT. KG</th>
                 </tr>
               </thead>
               <tbody>
                 {filasTabla.map((f, i) => (
                   <tr key={i}>
-                    <td className="border border-gray-600 px-2 py-1 max-w-[200px]">{f.producto}</td>
-                    <td className="border border-gray-600 px-2 py-1 whitespace-nowrap">{f.lote}</td>
-                    <td className="border border-gray-600 px-2 py-1 text-right">{f.bultos}</td>
-                    <td className="border border-gray-600 px-2 py-1 text-right">{Number(f.kg).toFixed(1)}</td>
+                    <td className="td-producto border border-gray-600 px-1.5 py-1 break-words">{f.producto}</td>
+                    <td className="border border-gray-600 px-1.5 py-1 whitespace-nowrap">{f.lote}</td>
+                    <td className="border border-gray-600 px-1.5 py-1 text-right whitespace-nowrap">{f.bultos}</td>
+                    <td className="border border-gray-600 px-1.5 py-1 text-right whitespace-nowrap">{Number(f.kg).toFixed(1)}</td>
                   </tr>
                 ))}
               </tbody>

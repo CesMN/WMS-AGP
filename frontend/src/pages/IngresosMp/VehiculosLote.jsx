@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Truck, Plus, Edit, Loader2, Download, Eye, ExternalLink, Trash2 } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { Truck, Plus, Edit, Loader2, Download, Eye, ExternalLink, Trash2, GripVertical } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Modal from '../../components/Modal'
 import PaginationBar from '../../components/PaginationBar'
@@ -8,13 +8,14 @@ import { especiesApi } from '../../api/especies'
 import { clientesApi } from '../../api/clientes'
 import { useConfig } from '../../contexts/ConfigContext'
 import { useAuth } from '../../contexts/AuthContext'
+import { traducirLoteAFecha } from '../../utils/traducirLoteAFecha'
 import toast from 'react-hot-toast'
 
 const VehiculosLote = () => {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const vehiculoIdFromUrl = searchParams.get('vehiculo_id')
-  const { registrosPorPagina } = useConfig()
+  const { registrosPorPagina, lotRepublicanoAnos } = useConfig()
   const { isAdmin } = useAuth()
   const [list, setList] = useState([])
   const [total, setTotal] = useState(0)
@@ -45,6 +46,9 @@ const VehiculosLote = () => {
   })
   const [errors, setErrors] = useState({})
   const [deletingVehiculoId, setDeletingVehiculoId] = useState(null)
+  const [dragVehiculoId, setDragVehiculoId] = useState(null)
+  const [dragOverVehiculoId, setDragOverVehiculoId] = useState(null)
+  const [savingOrder, setSavingOrder] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -65,7 +69,7 @@ const VehiculosLote = () => {
 
   useEffect(() => {
     let cancelled = false
-    const limit = registrosPorPagina || 50
+    const limit = filtroLote ? 500 : (registrosPorPagina || 50)
     setLoading(true)
     const params = { limit, offset: Number(offset) }
     if (filtroLote) params.lote_produccion_id = filtroLote
@@ -88,7 +92,88 @@ const VehiculosLote = () => {
   }, [offset, registrosPorPagina, refreshKey, filtroLote])
 
   const lotesActivos = lotes.filter((l) => l.estado === 'Iniciado' || l.estado === 'En proceso')
+  useEffect(() => {
+    if (filtroLote) return
+    if (lotesActivos.length === 0) return
+    setFiltroLote(lotesActivos[0].id)
+  }, [filtroLote, lotesActivos])
+
   const refreshLista = () => setRefreshKey((k) => k + 1)
+
+  const listOrdenada = useMemo(() => {
+    return [...list].sort((a, b) => {
+      const na = Number(a.numero_orden)
+      const nb = Number(b.numero_orden)
+      const aNum = Number.isFinite(na) ? na : Number.MAX_SAFE_INTEGER
+      const bNum = Number.isFinite(nb) ? nb : Number.MAX_SAFE_INTEGER
+      if (aNum !== bNum) return aNum - bNum
+      return String(a.numero_orden || '').localeCompare(String(b.numero_orden || ''), 'es', { numeric: true })
+    })
+  }, [list])
+
+  const hayCompletadosEnLote = useMemo(
+    () => listOrdenada.some((v) => v.descarga_estado === 'Completado'),
+    [listOrdenada]
+  )
+  const puedeReordenar = !!filtroLote && !savingOrder && !hayCompletadosEnLote
+
+  const reordenarLista = (items, fromId, toId) => {
+    const fromIdx = items.findIndex((x) => x.id === fromId)
+    const toIdx = items.findIndex((x) => x.id === toId)
+    if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return items
+    const next = [...items]
+    const [movido] = next.splice(fromIdx, 1)
+    next.splice(toIdx, 0, movido)
+    return next
+  }
+
+  const persistirOrden = async (items) => {
+    if (!filtroLote || items.length === 0) return
+    try {
+      setSavingOrder(true)
+      // Fase 1: mover a órdenes temporales para evitar colisiones (ej. intercambio 1 <-> 2)
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i]
+        const tempOrden = `tmp-${i + 1}-${Date.now()}`
+        await ingresosMpApi.vehiculoActualizar(item.id, {
+          numero_orden: tempOrden,
+          lote_produccion_id: item.lote_produccion_id,
+          proveedor_id: item.proveedor_id ?? null,
+          proveedor_nombre: item.proveedor_nombre ?? null,
+          placas: item.placas ?? null,
+          cantidad_aproximada: item.cantidad_aproximada ?? null,
+          especie_id: item.especie_id ?? null,
+          cliente_id: item.cliente_id ?? null,
+          origen: item.origen ?? null,
+        })
+      }
+      // Fase 2: asignar orden final secuencial
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i]
+        const nuevoOrden = String(i + 1)
+        await ingresosMpApi.vehiculoActualizar(item.id, {
+          numero_orden: nuevoOrden,
+          lote_produccion_id: item.lote_produccion_id,
+          proveedor_id: item.proveedor_id ?? null,
+          proveedor_nombre: item.proveedor_nombre ?? null,
+          placas: item.placas ?? null,
+          cantidad_aproximada: item.cantidad_aproximada ?? null,
+          especie_id: item.especie_id ?? null,
+          cliente_id: item.cliente_id ?? null,
+          origen: item.origen ?? null,
+        })
+      }
+      toast.success('Orden de vehículos actualizado')
+      refreshLista()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'No se pudo guardar el nuevo orden')
+      refreshLista()
+    } finally {
+      setSavingOrder(false)
+      setDragVehiculoId(null)
+      setDragOverVehiculoId(null)
+    }
+  }
 
   const openCrear = () => {
     setEditando(null)
@@ -273,12 +358,20 @@ const VehiculosLote = () => {
             <option key={l.id} value={l.id}>{l.codigo} ({l.estado})</option>
           ))}
         </select>
+        {filtroLote && (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            {hayCompletadosEnLote
+              ? 'Orden bloqueado: hay vehículos con descarga completada en este lote.'
+              : 'Arrastre desde el ícono para reordenar por N° de orden.'}
+          </span>
+        )}
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
           <thead className="bg-gray-50 dark:bg-gray-700">
             <tr>
+              <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Ordenar</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Lote</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">N° orden</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Proveedor</th>
@@ -292,15 +385,62 @@ const VehiculosLote = () => {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {list.map((item) => {
+            {listOrdenada.map((item) => {
               const estaCompletado = item.descarga_estado === 'Completado'
               const tieneDescarga = !!item.descarga_id
               const destacar = vehiculoIdFromUrl && item.id === vehiculoIdFromUrl
               return (
                 <tr
                   key={item.id}
-                  className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 ${destacar ? 'bg-primary-50 dark:bg-primary-900/20 ring-1 ring-primary-200 dark:ring-primary-700' : ''}`}
+                  draggable={puedeReordenar}
+                  onDragStart={(e) => {
+                    if (!puedeReordenar) return
+                    setDragVehiculoId(item.id)
+                    e.dataTransfer.effectAllowed = 'move'
+                    e.dataTransfer.setData('text/plain', String(item.id))
+                  }}
+                  onDragOver={(e) => {
+                    if (!puedeReordenar) return
+                    e.preventDefault()
+                    if (dragOverVehiculoId !== item.id) setDragOverVehiculoId(item.id)
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverVehiculoId === item.id) setDragOverVehiculoId(null)
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    if (!puedeReordenar) return
+                    const draggedId = dragVehiculoId || e.dataTransfer.getData('text/plain')
+                    if (!filtroLote || !draggedId || draggedId === item.id) return
+                    const next = reordenarLista(listOrdenada, draggedId, item.id).map((v, idx) => ({
+                      ...v,
+                      numero_orden: String(idx + 1),
+                    }))
+                    setList(next)
+                    persistirOrden(next)
+                  }}
+                  onDragEnd={() => {
+                    setDragVehiculoId(null)
+                    setDragOverVehiculoId(null)
+                  }}
+                  className={`hover:bg-gray-50 dark:hover:bg-gray-700/50 ${destacar ? 'bg-primary-50 dark:bg-primary-900/20 ring-1 ring-primary-200 dark:ring-primary-700' : ''} ${dragOverVehiculoId === item.id ? 'ring-2 ring-primary-400/70' : ''}`}
                 >
+                  <td className="px-3 py-3 text-center">
+                    <button
+                      type="button"
+                      className="inline-flex items-center justify-center p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-grab active:cursor-grabbing"
+                      title={
+                        !filtroLote
+                          ? 'Seleccione un lote para ordenar'
+                          : hayCompletadosEnLote
+                            ? 'Orden bloqueado por vehículos completados'
+                            : 'Arrastrar para reordenar'
+                      }
+                      disabled={!puedeReordenar}
+                    >
+                      {savingOrder && dragVehiculoId === item.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <GripVertical className="w-4 h-4" />}
+                    </button>
+                  </td>
                   <td className="px-4 py-3 text-sm text-gray-900 dark:text-white">{item.lote_codigo}</td>
                   <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{item.numero_orden}</td>
                   <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{item.proveedor_nombre || '—'}</td>
@@ -393,6 +533,18 @@ const VehiculosLote = () => {
         ) : detallesDescarga ? (
           <div className="space-y-4 text-sm">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {(() => {
+                const fechaTradLote = traducirLoteAFecha(detallesDescarga.lote_codigo, lotRepublicanoAnos)
+                return (
+                  <div className="py-1 border-b border-gray-100 dark:border-gray-700 sm:col-span-2">
+                    <span className="text-gray-500 dark:text-gray-400">Lote:</span>{' '}
+                    <span className="text-gray-900 dark:text-white">{detallesDescarga.lote_codigo || '—'}</span>
+                    {fechaTradLote ? (
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{fechaTradLote}</div>
+                    ) : null}
+                  </div>
+                )
+              })()}
               {[
                 ['Nº guía interna', detallesDescarga.numero_guia_interna],
                 ['Fecha descarga', detallesDescarga.fecha_descarga ? new Date(detallesDescarga.fecha_descarga).toLocaleDateString('es-PE') : '—'],
@@ -419,7 +571,7 @@ const VehiculosLote = () => {
                 <ul className="space-y-2 rounded-lg bg-gray-50 dark:bg-gray-700/50 p-3">
                   {detallesDescarga.winchas.map((w) => (
                     <li key={w.id} className="flex flex-wrap gap-x-4 gap-y-1 text-gray-700 dark:text-gray-300">
-                      Nº {w.numero_wincha || '—'} · {w.nombre_embarcacion || w.matricula_embarcacion || '—'} · Guía remitente: {w.numero_guia_remitente || '—'} · {w.peso_kg ?? '—'} kg · {w.cajas ?? '—'} cajas
+                      Nº {w.numero_wincha || '—'} · {w.nombre_embarcacion || '—'}{w.matricula_embarcacion ? ` · Mat. ${w.matricula_embarcacion}` : ''} · Guía remitente: {w.numero_guia_remitente || '—'} · {w.peso_kg ?? '—'} kg · {w.cajas ?? '—'} cajas
                     </li>
                   ))}
                 </ul>

@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react'
-import { LayoutTemplate, Plus, Edit, Trash2, Loader2, Search, X, GripVertical } from 'lucide-react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
+import * as XLSX from 'xlsx'
+import { LayoutTemplate, Plus, Edit, Copy, Trash2, Loader2, Search, X, GripVertical, Upload, Download } from 'lucide-react'
 import Modal from '../../components/Modal'
 import { plantillasProcesoApi } from '../../api/plantillas-proceso'
 import { clientesApi } from '../../api/clientes'
@@ -28,9 +29,18 @@ const PlantillasProceso = () => {
   const [togglingId, setTogglingId] = useState(null)
   const [modalOrdenOpen, setModalOrdenOpen] = useState(false)
   const [dragProductoId, setDragProductoId] = useState(null)
+  const [duplicandoDe, setDuplicandoDe] = useState(null)
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importReview, setImportReview] = useState(null)
+  const [importParsing, setImportParsing] = useState(false)
+  const importFileInputRef = useRef(null)
 
   useEffect(() => {
-    if (!modalOpen) setModalOrdenOpen(false)
+    if (!modalOpen) {
+      setModalOrdenOpen(false)
+      setImportModalOpen(false)
+      setImportReview(null)
+    }
   }, [modalOpen])
 
   useEffect(() => {
@@ -78,6 +88,7 @@ const PlantillasProceso = () => {
   const openCrear = () => {
     setModalOrdenOpen(false)
     setEditando(null)
+    setDuplicandoDe(null)
     setFormData({
       cliente_id: '',
       especie_id: '',
@@ -94,6 +105,7 @@ const PlantillasProceso = () => {
   const openEditar = (p) => {
     setModalOrdenOpen(false)
     setEditando(p)
+    setDuplicandoDe(null)
     setFormData({
       cliente_id: p.cliente_id,
       especie_id: p.especie_id,
@@ -123,6 +135,41 @@ const PlantillasProceso = () => {
         }))
       })
       .catch(() => toast.error('Error al cargar plantilla'))
+  }
+
+  const openDuplicar = (p) => {
+    setModalOrdenOpen(false)
+    setEditando(null)
+    setDuplicandoDe(p)
+    setFormData({
+      cliente_id: p.cliente_id,
+      especie_id: p.especie_id,
+      titulo: `${p.titulo || 'Plantilla'} (copia)`,
+      producto_ids: [],
+      operativo_agua_litros_por_tm_mp:
+        p.operativo_agua_litros_por_tm_mp != null && p.operativo_agua_litros_por_tm_mp !== ''
+          ? String(p.operativo_agua_litros_por_tm_mp)
+          : '',
+      operativo_hielo_kg_por_tm_mp:
+        p.operativo_hielo_kg_por_tm_mp != null && p.operativo_hielo_kg_por_tm_mp !== ''
+          ? String(p.operativo_hielo_kg_por_tm_mp)
+          : '',
+    })
+    setProductoSearch('')
+    loadProductos(p.cliente_id, p.especie_id)
+    setModalOpen(true)
+    plantillasProcesoApi.obtener(p.id)
+      .then(({ data }) => {
+        setFormData((prev) => ({
+          ...prev,
+          producto_ids: (data.productos || []).map((x) => x.id),
+          operativo_agua_litros_por_tm_mp:
+            data.operativo_agua_litros_por_tm_mp != null ? String(data.operativo_agua_litros_por_tm_mp) : '',
+          operativo_hielo_kg_por_tm_mp:
+            data.operativo_hielo_kg_por_tm_mp != null ? String(data.operativo_hielo_kg_por_tm_mp) : '',
+        }))
+      })
+      .catch(() => toast.error('Error al cargar plantilla para duplicar'))
   }
 
   const handleChange = (e) => {
@@ -185,6 +232,156 @@ const PlantillasProceso = () => {
     const byId = new Map(productosDisponibles.map((p) => [String(p.id), p]))
     return formData.producto_ids.map((id) => byId.get(String(id))).filter(Boolean)
   }, [formData.producto_ids, productosDisponibles])
+
+  /** Mapa código (mayús.) → producto del catálogo actual (cliente + especie). */
+  const productoPorCodigo = useMemo(() => {
+    const m = new Map()
+    productosDisponibles.forEach((p) => {
+      const c = String(p.codigo || '').trim()
+      if (c) m.set(c.toUpperCase(), p)
+    })
+    return m
+  }, [productosDisponibles])
+
+  const parseCodigosDesdeArchivo = (workbook) => {
+    const name = workbook.SheetNames[0]
+    const sheet = workbook.Sheets[name]
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+    const codigos = []
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      const cell = Array.isArray(row) ? row[0] : null
+      if (cell === '' || cell == null) continue
+      const s = String(cell).trim()
+      if (!s) continue
+      if (i === 0 && /^c[oó]d(igo)?$/i.test(s)) continue
+      codigos.push(s)
+    }
+    return codigos
+  }
+
+  const validarImportacionCodigos = (codigosEnOrden) => {
+    const vistos = new Set()
+    const duplicadosEnArchivo = []
+    const ordenUnico = []
+    for (const c of codigosEnOrden) {
+      const k = String(c).trim().toUpperCase()
+      if (!k) continue
+      if (vistos.has(k)) {
+        duplicadosEnArchivo.push(String(c).trim())
+        continue
+      }
+      vistos.add(k)
+      ordenUnico.push(String(c).trim())
+    }
+    const codigosInvalidos = []
+    const productosResueltos = []
+    for (const c of ordenUnico) {
+      const p = productoPorCodigo.get(c.toUpperCase())
+      if (!p) codigosInvalidos.push(c)
+      else productosResueltos.push(p)
+    }
+    const idsActuales = new Set(formData.producto_ids.map(String))
+    const yaSeleccionados = []
+    const nuevosParaAgregar = []
+    for (const p of productosResueltos) {
+      if (idsActuales.has(String(p.id))) yaSeleccionados.push(p)
+      else nuevosParaAgregar.push(p)
+    }
+    return {
+      codigosInvalidos,
+      duplicadosEnArchivo,
+      yaSeleccionados,
+      nuevosParaAgregar,
+      totalUnicos: ordenUnico.length,
+      vacio: ordenUnico.length === 0,
+    }
+  }
+
+  const descargarPlantillaImportacionExcel = () => {
+    const wb = XLSX.utils.book_new()
+    const data = [
+      ['codigo', 'Notas (esta columna no se importa)'],
+      ['', 'Pegue un código de producto por fila en la columna A. La fila 1 puede ser el encabezado "codigo".'],
+      ['', 'Los códigos deben existir en el catálogo del cliente y especie elegidos en el formulario.'],
+      ['', ''],
+      ['', ''],
+      ['', ''],
+    ]
+    const ws = XLSX.utils.aoa_to_sheet(data)
+    ws['!cols'] = [{ wch: 22 }, { wch: 72 }]
+    XLSX.utils.book_append_sheet(wb, ws, 'Productos')
+    XLSX.writeFile(wb, 'plantilla_importar_productos_plantilla_proceso.xlsx')
+    toast.success('Plantilla descargada')
+  }
+
+  const abrirSelectorImportar = () => {
+    if (!formData.cliente_id || !formData.especie_id) {
+      toast.error('Seleccione cliente y especie antes de importar')
+      return
+    }
+    if (productosDisponibles.length === 0) {
+      toast.error('No hay productos cargados para este cliente y especie')
+      return
+    }
+    importFileInputRef.current?.click()
+  }
+
+  const onArchivoImportacion = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const max = 2 * 1024 * 1024
+    if (file.size > max) {
+      toast.error('El archivo supera 2 MB')
+      return
+    }
+    setImportParsing(true)
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const data = new Uint8Array(ev.target.result)
+        const wb = XLSX.read(data, { type: 'array' })
+        const codigos = parseCodigosDesdeArchivo(wb)
+        const res = validarImportacionCodigos(codigos)
+        setImportReview({
+          ...res,
+          nombreArchivo: file.name,
+          totalFilasLeidas: codigos.length,
+        })
+        setImportModalOpen(true)
+        if (res.vacio) {
+          toast.error('No se encontraron códigos en la primera columna')
+        }
+      } catch {
+        toast.error('No se pudo leer el archivo. Use .xlsx, .xls o .csv')
+      } finally {
+        setImportParsing(false)
+      }
+    }
+    reader.onerror = () => {
+      setImportParsing(false)
+      toast.error('Error al leer el archivo')
+    }
+    reader.readAsArrayBuffer(file)
+  }
+
+  const aplicarImportacion = () => {
+    if (!importReview?.nuevosParaAgregar?.length) {
+      setImportModalOpen(false)
+      setImportReview(null)
+      return
+    }
+    const nuevosIds = importReview.nuevosParaAgregar.map((p) => p.id)
+    setFormData((prev) => ({ ...prev, producto_ids: [...prev.producto_ids, ...nuevosIds] }))
+    toast.success(
+      nuevosIds.length === 1
+        ? '1 producto agregado desde el archivo'
+        : `${nuevosIds.length} productos agregados desde el archivo`
+    )
+    setImportModalOpen(false)
+    setImportReview(null)
+  }
 
   const onDragStartProducto = (e, productoId) => {
     setDragProductoId(productoId)
@@ -268,6 +465,7 @@ const PlantillasProceso = () => {
         toast.success('Plantilla creada')
       }
       setModalOpen(false)
+      setDuplicandoDe(null)
       refreshLista()
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar')
@@ -369,6 +567,13 @@ const PlantillasProceso = () => {
                           <Edit className="w-4 h-4" />
                         </button>
                         <button
+                          onClick={() => openDuplicar(p)}
+                          className="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+                          title="Duplicar"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                        <button
                           onClick={() => handleEliminar(p)}
                           className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
                           title="Eliminar"
@@ -422,8 +627,11 @@ const PlantillasProceso = () => {
 
       <Modal
         isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editando ? 'Editar plantilla' : 'Nueva plantilla de proceso'}
+        onClose={() => {
+          setModalOpen(false)
+          setDuplicandoDe(null)
+        }}
+        title={editando ? 'Editar plantilla' : duplicandoDe ? 'Duplicar plantilla de proceso' : 'Nueva plantilla de proceso'}
         size="xl"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -478,16 +686,49 @@ const PlantillasProceso = () => {
               <p className="text-sm text-gray-500 dark:text-gray-400">Seleccione cliente y especie para cargar productos.</p>
             ) : (
               <>
-                <div className="relative mb-2">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <div className="flex flex-col sm:flex-row gap-2 mb-2">
+                  <div className="relative flex-1 min-w-0">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={productoSearch}
+                      onChange={(e) => setProductoSearch(e.target.value)}
+                      placeholder="Buscar producto por código o descripción..."
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 dark:bg-gray-700 dark:border-gray-600 dark:text-white rounded-lg text-sm"
+                    />
+                  </div>
                   <input
-                    type="text"
-                    value={productoSearch}
-                    onChange={(e) => setProductoSearch(e.target.value)}
-                    placeholder="Buscar producto por código o descripción..."
-                    className="w-full pl-9 pr-3 py-2 border border-gray-300 dark:bg-gray-700 dark:border-gray-600 dark:text-white rounded-lg text-sm"
+                    ref={importFileInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                    className="hidden"
+                    onChange={onArchivoImportacion}
                   />
+                  <div className="flex flex-wrap gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={descargarPlantillaImportacionExcel}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium whitespace-nowrap"
+                      title="Descarga un .xlsx de ejemplo: columna A con encabezado codigo"
+                    >
+                      <Download className="w-4 h-4 shrink-0" />
+                      Descargar plantilla
+                    </button>
+                    <button
+                      type="button"
+                      onClick={abrirSelectorImportar}
+                      disabled={importParsing}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-primary-400 dark:border-primary-500 text-primary-800 dark:text-primary-200 bg-primary-50 dark:bg-primary-950/40 hover:bg-primary-100 dark:hover:bg-primary-900/50 text-sm font-medium whitespace-nowrap disabled:opacity-50"
+                      title="Primera columna: un código por fila. Primera fila puede ser encabezado &quot;codigo&quot;."
+                    >
+                      {importParsing ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Upload className="w-4 h-4 shrink-0" />}
+                      Importar desde Excel
+                    </button>
+                  </div>
                 </div>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">
+                  Use &quot;Descargar plantilla&quot; para ver el formato (.xlsx: columna A, encabezado codigo). Al importar, solo se lee la columna A; el mismo catálogo cliente/especie y la validación aplican.
+                </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-48 overflow-auto">
                   <div className="border border-gray-200 dark:border-gray-600 rounded-lg p-2">
                     <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Disponibles — clic para agregar</p>
@@ -632,6 +873,14 @@ const PlantillasProceso = () => {
                   <span className="flex-1 text-sm text-gray-800 dark:text-gray-100 leading-relaxed break-words">
                     {getProductoLabel(prod)}
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => removeProducto(prod.id)}
+                    className="shrink-0 p-1 rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                    title="Quitar producto"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </li>
               ))}
             </ul>
@@ -646,6 +895,127 @@ const PlantillasProceso = () => {
             </button>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={importModalOpen}
+        onClose={() => {
+          setImportModalOpen(false)
+          setImportReview(null)
+        }}
+        title="Revisar importación de códigos"
+        size="lg"
+        zIndexClass="z-[60]"
+      >
+        {importReview && (
+          <div className="space-y-4 text-sm">
+            <p className="text-gray-600 dark:text-gray-300">
+              <span className="font-medium text-gray-800 dark:text-gray-200">Archivo:</span> {importReview.nombreArchivo}
+            </p>
+            <p className="text-gray-600 dark:text-gray-300">
+              Celdas leídas en columna A: <strong>{importReview.totalFilasLeidas}</strong>
+              {importReview.totalUnicos != null && (
+                <>
+                  {' '}
+                  · Códigos únicos: <strong>{importReview.totalUnicos}</strong>
+                </>
+              )}
+            </p>
+
+            {importReview.vacio && (
+              <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-amber-900 dark:text-amber-200">
+                No hay códigos para importar. Revise que la primera columna tenga valores o que la primera fila no bloquee todos los datos.
+              </div>
+            )}
+
+            {importReview.codigosInvalidos.length > 0 && (
+              <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 px-3 py-2">
+                <p className="font-medium text-red-800 dark:text-red-200 mb-2">
+                  Códigos no encontrados para este cliente y especie ({importReview.codigosInvalidos.length}). Corrija el archivo y vuelva a importar.
+                </p>
+                <ul className="max-h-32 overflow-y-auto text-red-900 dark:text-red-100 font-mono text-xs space-y-0.5 list-disc list-inside">
+                  {importReview.codigosInvalidos.map((c) => (
+                    <li key={c}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {importReview.codigosInvalidos.length === 0 && !importReview.vacio && (
+              <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 px-3 py-2 text-green-900 dark:text-green-200">
+                Todos los códigos válidos pertenecen al catálogo actual.
+              </div>
+            )}
+
+            {importReview.duplicadosEnArchivo.length > 0 && (
+              <p className="text-gray-600 dark:text-gray-400 text-xs">
+                Códigos repetidos en el archivo (se cuenta una sola vez cada uno):{' '}
+                <span className="font-mono">{[...new Set(importReview.duplicadosEnArchivo)].slice(0, 15).join(', ')}</span>
+                {importReview.duplicadosEnArchivo.length > 15 ? '…' : ''}
+              </p>
+            )}
+
+            {importReview.yaSeleccionados.length > 0 && (
+              <p className="text-gray-600 dark:text-gray-400 text-xs">
+                Ya estaban en la plantilla (no se duplican):{' '}
+                <span className="font-mono">
+                  {importReview.yaSeleccionados.slice(0, 12).map((p) => p.codigo).join(', ')}
+                  {importReview.yaSeleccionados.length > 12 ? ` … (+${importReview.yaSeleccionados.length - 12})` : ''}
+                </span>
+              </p>
+            )}
+
+            {importReview.codigosInvalidos.length === 0 && importReview.nuevosParaAgregar.length > 0 && (
+              <div>
+                <p className="font-medium text-gray-800 dark:text-gray-200 mb-1">
+                  Se agregarán {importReview.nuevosParaAgregar.length} producto(s):
+                </p>
+                <ul className="max-h-40 overflow-y-auto rounded border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 space-y-0.5">
+                  {importReview.nuevosParaAgregar.map((p) => (
+                    <li key={p.id} className="truncate" title={getProductoLabel(p)}>
+                      {getProductoLabel(p)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {importReview.codigosInvalidos.length > 0 && importReview.nuevosParaAgregar.length > 0 && (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                Hay códigos reconocidos listos para agregar, pero la importación está bloqueada hasta que quite o corrija los códigos inválidos del archivo.
+              </p>
+            )}
+
+            {importReview.codigosInvalidos.length === 0 && !importReview.vacio && importReview.nuevosParaAgregar.length === 0 && (
+              <p className="text-gray-600 dark:text-gray-400">No hay productos nuevos: todos los códigos ya estaban seleccionados.</p>
+            )}
+
+            <div className="flex flex-wrap gap-2 justify-end pt-2 border-t border-gray-200 dark:border-gray-600">
+              <button
+                type="button"
+                onClick={() => {
+                  setImportModalOpen(false)
+                  setImportReview(null)
+                }}
+                className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300"
+              >
+                {importReview.codigosInvalidos.length > 0 ? 'Cerrar' : 'Cancelar'}
+              </button>
+              <button
+                type="button"
+                onClick={aplicarImportacion}
+                disabled={
+                  importReview.codigosInvalidos.length > 0 ||
+                  importReview.vacio ||
+                  importReview.nuevosParaAgregar.length === 0
+                }
+                className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Agregar a la plantilla
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )

@@ -16,6 +16,19 @@ const ControlProduccion = () => {
   const [dirty, setDirty] = useState(false)
   const [applying, setApplying] = useState(false)
 
+  const handleGridArrowNav = (e, gridId, row, col, maxRow, maxCol) => {
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+    e.preventDefault()
+    let nextRow = row
+    let nextCol = col
+    if (e.key === 'ArrowUp') nextRow = Math.max(0, row - 1)
+    if (e.key === 'ArrowDown') nextRow = Math.min(maxRow, row + 1)
+    if (e.key === 'ArrowLeft') nextCol = Math.max(0, col - 1)
+    if (e.key === 'ArrowRight') nextCol = Math.min(maxCol, col + 1)
+    const next = document.querySelector(`[data-grid="${gridId}"][data-row="${nextRow}"][data-col="${nextCol}"]`)
+    if (next) next.focus()
+  }
+
   const loadLotes = () => {
     setLoading(true)
     controlProduccionApi.lotesActivos()
@@ -293,11 +306,14 @@ const ControlProduccion = () => {
             {controlData.productos?.length > 0 && (
               <>
                 <div className="rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden">
+                  <div className="px-3 py-1.5 text-[11px] text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700/40">
+                    Vista tipo hoja de cálculo: use flechas para desplazarse por toda la fila y deslice horizontalmente para ver todas las columnas.
+                  </div>
                   <div className="wms-table-scroll">
-                    <table className="min-w-[72rem] w-full text-sm border-collapse">
+                    <table className="min-w-[92rem] w-full text-sm border-separate border-spacing-0 table-fixed">
                       <colgroup>
                         <col style={{ width: '100px' }} />
-                        <col style={{ width: '200px', minWidth: '160px' }} />
+                        <col style={{ width: '320px', minWidth: '280px' }} />
                         <col style={{ width: '90px' }} />
                         <col style={{ width: '90px' }} />
                         <col style={{ width: '90px' }} />
@@ -305,9 +321,8 @@ const ControlProduccion = () => {
                         <col style={{ width: '100px' }} />
                         <col style={{ width: '95px' }} />
                         <col style={{ width: '100px' }} />
-                        <col style={{ width: '80px' }} />
-                        <col style={{ minWidth: '260px' }} />
-                        <col style={{ minWidth: '220px' }} />
+                        <col style={{ width: '280px', minWidth: '280px' }} />
+                        <col style={{ width: '440px', minWidth: '440px' }} />
                       </colgroup>
                       <thead>
                         <tr className="bg-gray-100 dark:bg-gray-700">
@@ -344,59 +359,65 @@ const ControlProduccion = () => {
                           <th className="px-2 py-2 text-center font-medium text-gray-900 dark:text-gray-100">Total bultos</th>
                           <th className="px-2 py-2 text-center font-medium text-gray-900 dark:text-gray-100" title="Enviado a cámara (parihuelas)">Env. cámara</th>
                           <th className="px-2 py-2 text-center font-medium text-gray-900 dark:text-gray-100" title="Todo lo enviado a cámara recepcionado en almacén">Validado por cámara</th>
-                          <th className="px-2 py-2 text-left font-medium text-gray-900 dark:text-gray-100">Aplicación a OP</th>
                           <th className="px-2 py-2 text-left font-medium text-gray-900 dark:text-gray-100">Asignación OP</th>
+                          <th className="px-2 py-2 text-left font-medium text-gray-900 dark:text-gray-100">Aplicación a OP</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-200 dark:divide-gray-600">
-                        {productosAgrupados().map(({ nombreProducto, productos }) =>
+                      <tbody>
+                        {(() => {
+                          let rowCursor = -1
+                          const maxRow = Math.max((controlData?.productos?.length || 1) - 1, 0)
+                          const maxCol = 10
+                          return productosAgrupados().map(({ nombreProducto, productos }) =>
                           productos.map((p, idx) => {
+                            rowCursor += 1
+                            const rowIndex = rowCursor
                             const linea = [p.codigo, p.descripcion, p.presentacion].filter(Boolean).join(' · ')
                             const isFirst = idx === 0
                             const opciones = opcionesOpByProducto[p.producto_id] || []
                             const lineasIds = (asignacionEdit[p.producto_id] || []).length ? asignacionEdit[p.producto_id] : [null]
                             return (
-                              <tr key={p.producto_id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
+                              <tr key={p.producto_id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 odd:bg-white even:bg-gray-50/40 dark:odd:bg-gray-800 dark:even:bg-gray-800/70">
                                 {isFirst ? (
-                                  <td rowSpan={productos.length} className="px-2 py-1.5 align-top sticky left-0 z-10 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-medium" style={{ minWidth: '100px' }}>
+                                  <td rowSpan={productos.length} tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 0, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={0} className="px-2 py-1.5 align-top sticky left-0 z-10 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 font-medium border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500" style={{ minWidth: '100px' }}>
                                     {nombreProducto}
                                   </td>
                                 ) : null}
-                                <td className="px-2 py-1.5 whitespace-nowrap overflow-hidden text-ellipsis sticky z-10 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs" style={{ left: '100px' }} title={linea}>
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 1, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={1} className="px-2 py-1.5 whitespace-normal break-words sticky z-10 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-xs border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500" style={{ left: '100px' }} title={linea}>
                                   {linea}
                                 </td>
-                                <td className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100">
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 2, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={2} className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500">
                                   {p.total_envasado_kg != null ? `${p.total_envasado_kg.toFixed(1)} kg` : '—'}
                                 </td>
-                                <td className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100">
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 3, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={3} className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500">
                                   {p.total_congelado_kg != null ? `${p.total_congelado_kg.toFixed(1)} kg` : '—'}
                                 </td>
-                                <td className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100">
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 4, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={4} className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500">
                                   {p.total_empaque_kg != null ? `${p.total_empaque_kg.toFixed(1)} kg` : '—'}
                                 </td>
-                                <td className="px-2 py-1.5 text-center bg-white dark:bg-gray-800">
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 5, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={5} className="px-2 py-1.5 text-center bg-white dark:bg-gray-800 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500">
                                   {iconoCoincidencia(p)}
                                 </td>
-                                <td className="px-2 py-1.5 text-center bg-white dark:bg-gray-800">
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 6, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={6} className="px-2 py-1.5 text-center bg-white dark:bg-gray-800 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500">
                                   {p.total_empaque_bultos != null ? Number(p.total_empaque_bultos) || 0 : 0}
                                 </td>
-                                <td className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800" title={`Enviado a cámara (${(p.unidad_parihuela || 'BULTOS').toLowerCase()})`}>
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 7, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={7} className="px-2 py-1.5 text-center text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500" title={`Enviado a cámara (${(p.unidad_parihuela || 'BULTOS').toLowerCase()})`}>
                                   {(p.enviado_a_camara != null ? Number(p.enviado_a_camara) : 0) || '—'}
                                 </td>
-                                <td className="px-2 py-1.5 text-center bg-white dark:bg-gray-800" title={p.validado_camara === true ? 'Todo recepcionado en cámara' : p.validado_camara === false ? 'Pendiente de recepción en cámara' : 'Sin envío a cámara'}>
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 8, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={8} className="px-2 py-1.5 text-center bg-white dark:bg-gray-800 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500" title={p.validado_camara === true ? 'Todo recepcionado en cámara' : p.validado_camara === false ? 'Pendiente de recepción en cámara' : 'Sin envío a cámara'}>
                                   {p.validado_camara === true && <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 mx-auto" />}
                                   {p.validado_camara === false && <XCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 mx-auto" />}
                                   {p.validado_camara == null && <span className="text-gray-400">—</span>}
                                 </td>
-                                <td className="px-2 py-1.5 bg-white dark:bg-gray-800">
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 9, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={9} className="px-2 py-1.5 bg-white dark:bg-gray-800 border-b border-r border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500">
                                   <div className="flex flex-wrap items-center gap-1">
                                     {lineasIds.map((lineaId, i) => (
-                                      <div key={i} className="flex items-center gap-0.5">
+                                      <div key={i} className="flex items-center gap-0.5 w-full sm:w-auto">
                                         <span className="text-[10px] text-gray-500 dark:text-gray-400">{i + 1}.</span>
                                         <select
                                           value={lineaId || ''}
                                           onChange={(e) => setAsignacionPrioridad(p.producto_id, i, e.target.value || null)}
-                                          className="text-xs border border-gray-300 dark:border-gray-500 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-w-[120px] max-w-[180px]"
+                                          className="text-xs border border-gray-300 dark:border-gray-500 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-full sm:w-[170px] min-w-0"
                                         >
                                           <option value="">Sin OP</option>
                                           {opciones.map((op) => (
@@ -418,13 +439,13 @@ const ControlProduccion = () => {
                                     <button
                                       type="button"
                                       onClick={() => agregarPrioridad(p.producto_id)}
-                                      className="inline-flex items-center gap-0.5 text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                                      className="inline-flex items-center gap-0.5 text-xs text-primary-600 dark:text-primary-400 hover:underline whitespace-nowrap"
                                     >
                                       <Plus className="w-3.5 h-3.5" /> Agregar OP
                                     </button>
                                   </div>
                                 </td>
-                                <td className="px-2 py-1.5 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-200">
+                                <td tabIndex={0} onKeyDown={(e) => handleGridArrowNav(e, 'control-grid', rowIndex, 10, maxRow, maxCol)} data-grid="control-grid" data-row={rowIndex} data-col={10} className="px-2 py-1.5 bg-white dark:bg-gray-800 text-xs text-gray-700 dark:text-gray-200 border-b border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-1 focus:ring-primary-500">
                                   <span title={mensajeAplicacionOp(p)} className="block whitespace-nowrap overflow-hidden text-ellipsis max-w-[420px]">
                                     {mensajeAplicacionOp(p)}
                                   </span>
@@ -432,7 +453,8 @@ const ControlProduccion = () => {
                               </tr>
                             )
                           })
-                        )}
+                        )})()
+                        }
                       </tbody>
                       <tfoot>
                         <tr className="bg-gray-50 dark:bg-gray-900/40">

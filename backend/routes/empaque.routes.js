@@ -28,6 +28,24 @@ const initTables = async () => {
     )
   `);
   await pool.query(`ALTER TABLE empaque ADD COLUMN IF NOT EXISTS plantilla_snapshot JSONB`);
+  const empCols = await pool.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'empaque'`
+  );
+  const empNames = (empCols.rows || []).map((r) => r.column_name);
+  if (!empNames.includes('columnas_hora')) {
+    await pool.query('ALTER TABLE empaque ADD COLUMN columnas_hora JSONB');
+  }
+};
+
+/** Asegura columna origen en parihuelas (planilla manual vs. generación normal). */
+const ensureParihuelasOrigen = async () => {
+  const cols = await pool.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'parihuelas_produccion'`
+  );
+  const names = (cols.rows || []).map((r) => r.column_name);
+  if (!names.includes('origen')) {
+    await pool.query(`ALTER TABLE parihuelas_produccion ADD COLUMN origen VARCHAR(40) DEFAULT 'NORMAL'`);
+  }
 };
 
 router.get('/lotes-activos', async (req, res) => {
@@ -183,7 +201,7 @@ router.get('/:id', async (req, res) => {
     await initTables();
     const { id } = req.params;
     const enc = await pool.query(
-      `SELECT e.id, e.lote_id, e.plantilla_id, e.estado, e.finalizado_at, e.created_at, e.plantilla_snapshot,
+      `SELECT e.id, e.lote_id, e.plantilla_id, e.estado, e.finalizado_at, e.created_at, e.plantilla_snapshot, e.columnas_hora,
               lp.codigo AS lote_codigo, lp.estado AS lote_estado,
               pp.titulo AS plantilla_titulo, pp.cliente_id, pp.especie_id,
               c.nombre AS cliente_nombre, esp.nombre AS especie_nombre
@@ -197,6 +215,13 @@ router.get('/:id', async (req, res) => {
     );
     if (enc.rows.length === 0) return res.status(404).json({ message: 'Empaque no encontrado' });
     const empaque = enc.rows[0];
+    if (empaque.columnas_hora != null && typeof empaque.columnas_hora === 'string') {
+      try {
+        empaque.columnas_hora = JSON.parse(empaque.columnas_hora);
+      } catch {
+        empaque.columnas_hora = null;
+      }
+    }
     const plantilla_id = empaque.plantilla_id;
     const snap = parsePlantillaSnapshot(empaque.plantilla_snapshot);
 
@@ -253,7 +278,7 @@ router.put('/:id', async (req, res) => {
   try {
     await initTables();
     const { id } = req.params;
-    const { plantilla_id, productos } = req.body;
+    const { plantilla_id, productos, columnas_horas } = req.body;
 
     const enc = await pool.query('SELECT id, estado FROM empaque WHERE id = $1', [id]);
     if (enc.rows.length === 0) return res.status(404).json({ message: 'Empaque no encontrado' });
@@ -263,7 +288,7 @@ router.put('/:id', async (req, res) => {
 
     if (plantilla_id) {
       await pool.query(
-        'UPDATE empaque SET plantilla_id = $1, plantilla_snapshot = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        'UPDATE empaque SET plantilla_id = $1, plantilla_snapshot = NULL, columnas_hora = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         [plantilla_id, id]
       );
       await pool.query('DELETE FROM empaque_detalle WHERE empaque_id = $1', [id]);
@@ -290,6 +315,17 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    if (Array.isArray(columnas_horas) && columnas_horas.length > 0) {
+      const cols = columnas_horas.map((c, i) => ({
+        id: c.id != null ? String(c.id) : `col-${i}`,
+        hora: Math.min(23, Math.max(0, Number(c.hora) || 0)),
+      }));
+      await pool.query(
+        'UPDATE empaque SET columnas_hora = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [JSON.stringify(cols), id]
+      );
+    }
+
     const full = await pool.query(
       `SELECT e.id, e.lote_id, e.plantilla_id, e.estado, e.updated_at,
               lp.codigo AS lote_codigo, pp.titulo AS plantilla_titulo,
@@ -306,6 +342,95 @@ router.put('/:id', async (req, res) => {
   } catch (error) {
     console.error('Error actualizando empaque:', error);
     res.status(500).json({ message: 'Error al actualizar' });
+  }
+});
+
+/** Crea parihuelas EN_TRANSITO desde datos_horas (planilla manual). Reemplaza solo las anteriores de origen PLANILLA_MANUAL. */
+router.post('/:id/enviar-planilla-recepcion', async (req, res) => {
+  try {
+    await initTables();
+    await ensureParihuelasOrigen();
+    const usuario_id = req.user?.id;
+    if (!usuario_id) return res.status(401).json({ message: 'Usuario no autenticado' });
+    const { id: empaque_id } = req.params;
+
+    const enc = await pool.query(`SELECT e.id, e.lote_id, e.estado FROM empaque e WHERE e.id = $1`, [empaque_id]);
+    if (enc.rows.length === 0) return res.status(404).json({ message: 'Empaque no encontrado' });
+    if (enc.rows[0].estado === 'finalizado') {
+      return res.status(400).json({ message: 'No se puede enviar: el empaque está finalizado' });
+    }
+    const lote_id = enc.rows[0].lote_id;
+
+    await pool.query(
+      `DELETE FROM parihuelas_produccion
+       WHERE empaque_id = $1 AND estado = 'EN_TRANSITO' AND COALESCE(origen, 'NORMAL') = 'PLANILLA_MANUAL'`,
+      [empaque_id]
+    );
+
+    const detalle = await pool.query(
+      `SELECT ed.producto_id, ed.datos_horas,
+              p.capacidad_parihuela_bultos, p.capacidad_parihuela_cajas, p.unidad_parihuela
+       FROM empaque_detalle ed
+       JOIN productos p ON p.id = ed.producto_id
+       WHERE ed.empaque_id = $1`,
+      [empaque_id]
+    );
+
+    let creadas = 0;
+    for (const row of detalle.rows) {
+      let datos_horas = row.datos_horas;
+      if (typeof datos_horas === 'string') {
+        try {
+          datos_horas = JSON.parse(datos_horas || '{}');
+        } catch {
+          datos_horas = {};
+        }
+      }
+      datos_horas = datos_horas || {};
+      const unidadProd = (row.unidad_parihuela || 'BULTOS').toUpperCase() === 'CAJAS' ? 'CAJAS' : 'BULTOS';
+      const capB = Number(row.capacidad_parihuela_bultos) || 0;
+      const capC = Number(row.capacidad_parihuela_cajas) || 0;
+      const capacidad = unidadProd === 'CAJAS' ? capC : capB;
+
+      for (const [horaKey, rawVal] of Object.entries(datos_horas)) {
+        const horaNum = parseInt(horaKey, 10);
+        if (Number.isNaN(horaNum) || horaNum < 0 || horaNum > 23) continue;
+        const cant = Number(rawVal);
+        if (!cant || cant <= 0) continue;
+
+        const lotesAInsertar = [];
+        if (capacidad > 0) {
+          const fullCount = Math.floor(cant / capacidad);
+          const remainder = cant - fullCount * capacidad;
+          for (let i = 0; i < fullCount; i++) {
+            lotesAInsertar.push({ cantidad: capacidad, es_completa: true });
+          }
+          if (remainder > 0) {
+            lotesAInsertar.push({ cantidad: remainder, es_completa: false });
+          }
+        } else {
+          lotesAInsertar.push({ cantidad: cant, es_completa: false });
+        }
+
+        const refBase = `MP H${String(horaNum).padStart(2, '0')}`;
+        for (const item of lotesAInsertar) {
+          await pool.query(
+            `INSERT INTO parihuelas_produccion (lote_id, empaque_id, producto_id, cantidad, unidad_parihuela, es_completa, estado, referencia, hora, usuario_empaque_id, origen)
+             VALUES ($1, $2, $3, $4, $5, $6, 'EN_TRANSITO', $7, $8, $9, 'PLANILLA_MANUAL')`,
+            [lote_id, empaque_id, row.producto_id, item.cantidad, unidadProd, item.es_completa, refBase, horaNum, usuario_id]
+          );
+          creadas += 1;
+        }
+      }
+    }
+
+    res.json({
+      message: 'Parihuelas generadas desde la planilla manual. Aparecen en Recepción de parihuelas.',
+      creadas,
+    });
+  } catch (error) {
+    console.error('Error enviando planilla a recepción:', error);
+    res.status(500).json({ message: 'Error al generar parihuelas desde la planilla' });
   }
 });
 

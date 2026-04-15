@@ -20,10 +20,17 @@ const cantidadParihuelaValida = (raw) => {
   return !Number.isNaN(n) && n > 0
 }
 
-const LOTE_ABIERTO = ['Iniciado', 'En proceso']
+const normalizarEstadoLote = (estado) =>
+  String(estado || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+
+const LOTE_ABIERTO = new Set(['iniciado', 'en proceso'])
 
 const RecepcionParihuelas = () => {
   const [lotes, setLotes] = useState([])
+  const [filtroLotes, setFiltroLotes] = useState('en_proceso')
   const [loteSeleccionado, setLoteSeleccionado] = useState(null)
   const [list, setList] = useState([])
   const [loading, setLoading] = useState(true)
@@ -177,7 +184,23 @@ const RecepcionParihuelas = () => {
   }
 
   const listFiltered = loteSeleccionado ? list.filter((p) => p.lote_id === loteSeleccionado.id) : []
-  const puedeReabrir = (p) => p.estado === 'ALMACENADA' && p.lote_estado && LOTE_ABIERTO.includes(p.lote_estado)
+  const puedeReabrir = (p) =>
+    p.estado === 'ALMACENADA' && LOTE_ABIERTO.has(normalizarEstadoLote(p.lote_estado))
+  const lotesVisibles = lotes.filter((lote) => {
+    if (filtroLotes !== 'en_proceso') return true
+    const estadoLote = normalizarEstadoLote(lote?.lote_estado || lote?.estado)
+    return LOTE_ABIERTO.has(estadoLote)
+  })
+
+  useEffect(() => {
+    if (lotesVisibles.length === 0) {
+      setLoteSeleccionado(null)
+      return
+    }
+    if (!loteSeleccionado || !lotesVisibles.some((l) => l.id === loteSeleccionado.id)) {
+      setLoteSeleccionado(lotesVisibles[0])
+    }
+  }, [lotesVisibles, loteSeleccionado])
 
   const handleBuscarPorId = () => {
     const id = busquedaId.trim()
@@ -219,10 +242,21 @@ const RecepcionParihuelas = () => {
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Desde Empaque: elija lote, asigne ubicación o remonte.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 ml-auto">
-          {lotes.length === 0 && !loading && (
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600 dark:text-gray-300">Lotes:</label>
+            <select
+              value={filtroLotes}
+              onChange={(e) => setFiltroLotes(e.target.value)}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100"
+            >
+              <option value="en_proceso">Solo en proceso</option>
+              <option value="todos">Todos</option>
+            </select>
+          </div>
+          {lotesVisibles.length === 0 && !loading && (
             <span className="text-sm text-gray-500 dark:text-gray-400">No hay lotes con parihuelas.</span>
           )}
-          {lotes.map((lote) => {
+          {lotesVisibles.map((lote) => {
             const selected = loteSeleccionado?.id === lote.id
             const enTransito = Number(lote.en_transito) || 0
             const almacenadas = Number(lote.almacenadas) || 0
@@ -258,13 +292,13 @@ const RecepcionParihuelas = () => {
         </div>
       )}
 
-      {!loading && lotes.length === 0 && (
+      {!loading && lotesVisibles.length === 0 && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-8 text-center text-gray-500 dark:text-gray-400">
-          No hay parihuelas. Genere parihuelas desde el módulo Empaque (Enviar a cámara).
+          No hay lotes para el filtro seleccionado. Genere parihuelas desde Empaque o cambie a "Todos".
         </div>
       )}
 
-      {!loading && lotes.length > 0 && (
+      {!loading && lotesVisibles.length > 0 && (
         <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
             <label className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0">Buscar por ID (QR / pegar):</label>
